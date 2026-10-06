@@ -214,6 +214,7 @@ try {
 
 function openHistoryCalendar() {
   const today = new Date();
+  const todayKey = dateKey(today);
   const dates = [];
 
   for (let offset = 29; offset >= 0; offset -= 1) {
@@ -223,44 +224,94 @@ function openHistoryCalendar() {
     dates.push(date);
   }
 
-  const firstDate = dates[0];
-  const lastDate = dates[dates.length - 1];
+  const pillIds = new Set(pills.map(pill => pill.id));
+  const doseCounts = new Map();
+  const glucoseCounts = new Map();
 
-  const rangeLabel = `${fmtDate(firstDate, {
+  for (const dose of doses) {
+    if (!pillIds.has(dose.pillId)) continue;
+
+    const key = String(dose.scheduledAt).slice(0, 10);
+    doseCounts.set(key, (doseCounts.get(key) || 0) + 1);
+  }
+
+  for (const reading of glucose) {
+    const key = String(reading.at).slice(0, 10);
+    glucoseCounts.set(key, (glucoseCounts.get(key) || 0) + 1);
+  }
+
+  const rangeLabel = `${fmtDate(dates[0], {
     month: 'short',
     day: 'numeric',
-  })} – ${fmtDate(lastDate, {
+  })} – ${fmtDate(dates[dates.length - 1], {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
   })}`;
 
+  let previousMonth = '';
+
   const dateButtons = dates.map(date => {
     const key = dateKey(date);
-    const isToday = key === dateKey(today);
-    const monthChanged =
-      date.getDate() === 1 || key === dateKey(firstDate);
+    const monthKey = key.slice(0, 7);
+    const isToday = key === todayKey;
+    const doseCount = doseCounts.get(key) || 0;
+    const glucoseCount = glucoseCounts.get(key) || 0;
+
+    const fullDate = fmtDate(date, {
+      weekday: 'long',
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+    });
+
+    const description = [
+      fullDate,
+      isToday ? 'Today' : '',
+      `${doseCount} dose record${doseCount === 1 ? '' : 's'}`,
+      `${glucoseCount} glucose reading${glucoseCount === 1 ? '' : 's'}`,
+    ].filter(Boolean).join('. ');
+
+    let monthMarker = '';
+
+    if (monthKey !== previousMonth) {
+      monthMarker = `
+        <p class="history-month-marker">
+          ${esc(fmtDate(date, {
+            month: 'long',
+            year: 'numeric',
+          }))}
+        </p>
+      `;
+
+      previousMonth = monthKey;
+    }
 
     return `
-      ${monthChanged ? `
-        <div class="history-month-marker">
-          ${esc(new Intl.DateTimeFormat(undefined, {
-            month: 'short',
-          }).format(date).toUpperCase())}
-        </div>
-      ` : ''}
+      ${monthMarker}
+
       <button
         type="button"
-        class="history-day ${isToday ? 'today' : ''}"
+        class="history-day${isToday ? ' today' : ''}"
         data-history-date="${esc(key)}"
-        aria-label="View history for ${esc(fmtDate(date))}"
+        aria-label="${esc(description)}"
+        ${isToday ? 'aria-current="date"' : ''}
       >
         <span class="history-day-weekday">
-          ${esc(new Intl.DateTimeFormat(undefined, {
-            weekday: 'short',
-          }).format(date))}
+          ${esc(fmtDate(date, { weekday: 'short' }))}
         </span>
-        <strong>${esc(date.getDate())}</strong>
+
+        <strong>${date.getDate()}</strong>
+
+        <span class="history-day-dots" aria-hidden="true">
+          <span class="history-dot-slot">
+            ${doseCount ? '<span class="history-dot dose"></span>' : ''}
+          </span>
+
+          <span class="history-dot-slot">
+            ${glucoseCount ? '<span class="history-dot glucose"></span>' : ''}
+          </span>
+        </span>
       </button>
     `;
   }).join('');
@@ -269,23 +320,48 @@ function openHistoryCalendar() {
     <div class="modal-head">
       <div>
         <h2 id="modal-title">Medication history</h2>
-        <p class="modal-intro">Last 30 days · ${esc(rangeLabel)}</p>
+        <p class="modal-intro">
+          Last 30 days · ${esc(rangeLabel)}
+        </p>
       </div>
-      <button class="close-modal" data-close aria-label="Close">×</button>
+
+      <button class="close-modal" data-close aria-label="Close">
+        ×
+      </button>
     </div>
 
-    <div class="history-calendar" aria-label="Medication history for the last 30 days">
+    <div class="history-calendar-legend">
+      <span>
+        <span class="history-dot dose" aria-hidden="true"></span>
+        Dose records
+      </span>
+
+      <span>
+        <span class="history-dot glucose" aria-hidden="true"></span>
+        Glucose readings
+      </span>
+    </div>
+
+    <div
+      class="history-calendar"
+      aria-label="Dose and glucose history for the last 30 days"
+    >
       ${dateButtons}
     </div>
+
+    <p class="history-calendar-note">
+      Dots show stored records, not whether every dose was taken.
+      Tap a date to view details.
+    </p>
   `);
 
   $('#modal-root')
-  .querySelectorAll('[data-history-date]')
-  .forEach(button => {
-    button.onclick = () => {
-      openHistoryDay(button.dataset.historyDate);
-    };
-  });
+    .querySelectorAll('[data-history-date]')
+    .forEach(button => {
+      button.onclick = () => {
+        openHistoryDay(button.dataset.historyDate);
+      };
+    });
 }
 
 function openHistoryDay(key) {

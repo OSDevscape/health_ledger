@@ -304,3 +304,74 @@
   height: 26px;
   font-size: 23px;
 }
+
+/* 30-day history indicators */
+.history-calendar {
+  --history-glucose-dot: #5b83c8;
+}
+
+.history-calendar-legend {
+  --history-glucose-dot: #5b83c8;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  margin: 4px 0 14px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.history-calendar-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.history-calendar .history-day {
+  min-height: 76px;
+  grid-template-rows: auto auto 12px;
+  gap: 4px;
+}
+
+.history-day-dots {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 12px;
+}
+
+.history-dot-slot {
+  display: inline-grid;
+  place-items: center;
+  width: 8px;
+  height: 8px;
+}
+
+.history-dot {
+  display: inline-block;
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.history-dot.dose {
+  background: var(--accent);
+}
+
+.history-dot.glucose {
+  background: var(--history-glucose-dot);
+}
+
+.history-calendar-note {
+  margin: 16px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+@media (max-width: 380px) {
+  .history-calendar .history-day {
+    min-height: 68px;
+  }
+}
