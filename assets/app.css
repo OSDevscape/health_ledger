@@ -280,3 +280,27 @@
 .history-detail-item .history-detail-marker.history-pill-marker {
   background: var(--history-pill-color, var(--muted));
 }
+
+/* Emoji icons without changing navigation labels or layout. */
+.nav-emoji,
+.settings-emoji {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji",
+    "Noto Color Emoji", sans-serif;
+  font-weight: normal;
+  line-height: 1;
+}
+
+.nav-emoji {
+  width: 24px;
+  height: 24px;
+  font-size: 22px;
+}
+
+.settings-emoji {
+  width: 26px;
+  height: 26px;
+  font-size: 23px;
+}
