@@ -125,7 +125,41 @@ entries.push({
     const permission = await requestPermission();
     if (!permission.granted) return { supported: true, permission, scheduled: 0, cancelled: 0, exactAlarm: await checkExactAlarmPermission(), message: 'Notification permission is not enabled.' };
     await createAndroidChannel();
-    try { await plugin().cancelAll(); } catch (_) { /* first launch or plugin version may not expose this */ }
+    let cancelled = 0;
+
+try {
+  const pending = await plugin().getPending();
+
+  const medicationNotifications = (
+    pending.notifications || []
+  ).filter(notification => {
+    return (
+      notification.extra?.type === 'pill-dose' ||
+      notification.channelId === CHANNEL_ID
+    );
+  });
+
+  if (medicationNotifications.length) {
+    await plugin().cancel({
+      notifications: medicationNotifications.map(notification => ({
+        id: notification.id,
+      })),
+    });
+
+    cancelled = medicationNotifications.length;
+  }
+} catch (error) {
+  return {
+    supported: true,
+    permission,
+    scheduled: 0,
+    cancelled,
+    exactAlarm: await checkExactAlarmPermission(),
+    errors: [error?.message || String(error)],
+    message:
+      'Could not refresh medication reminders. Existing schedules were left in place where possible.',
+  };
+}
     let scheduled = 0;
     const errors = [];
     for (const pill of pills) {
@@ -135,7 +169,7 @@ entries.push({
       try { await plugin().schedule({ notifications: entries }); scheduled += entries.length; }
       catch (error) { errors.push(`${pill.name}: ${error?.message || String(error)}`); }
     }
-    return { supported: true, permission, scheduled, cancelled: 'all prior notifications', exactAlarm: await checkExactAlarmPermission(), errors, message: errors.length ? errors.join('; ') : `Reminder sync complete. ${scheduled} repeating notification(s) scheduled.` };
+    return { supported: true, permission, scheduled, cancelled,exactAlarm: await checkExactAlarmPermission(), errors, message: errors.length ? errors.join('; ') : `Reminder sync complete. ${scheduled} repeating notification(s) scheduled.` };
   }
   function registerActionListener(callback) {
     if (!isNative() || typeof callback !== 'function' || !plugin().addListener) return null;
