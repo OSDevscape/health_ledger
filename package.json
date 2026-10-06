@@ -1,0 +1,26 @@
+{
+  "name": "health-ledger",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Offline-first Android medication and glucose organizer",
+  "scripts": {
+    "start": "serve www",
+    "android:add": "cap add android",
+    "android:sync": "cap sync android",
+    "android:open": "cap open android",
+    "android:build": "cd android && gradlew.bat assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.4.3",
+    "@capacitor/app": "^7.0.0",
+    "@capacitor/core": "^7.4.3",
+    "@capacitor/filesystem": "^7.1.9",
+    "@capacitor/local-notifications": "^7.0.3",
+    "@capacitor/share": "^7.0.4",
+    "@capawesome/capacitor-file-picker": "^7.2.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.4.3",
+    "serve": "^14.2.4"
+  }
+}

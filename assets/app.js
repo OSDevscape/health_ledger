@@ -1,0 +1,524 @@
+/* Health Ledger — offline-first medication and glucose organizer. */
+(() => {
+  'use strict';
+  const KEYS = { pills: 'healthLedger.pills', doses: 'healthLedger.doses', glucose: 'healthLedger.glucose', settings: 'healthLedger.settings', theme: 'healthLedger.theme', onboarding: 'healthLedger.onboarding' };
+  const $ = selector => document.querySelector(selector);
+  const $$ = selector => [...document.querySelectorAll(selector)];
+  const COLORS = ['#4B9B76', '#5B83C8', '#C28B46', '#9875C5', '#D16F72', '#4E9DA7', '#7F8B8A'];
+  const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const LONG_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const FORMS = ['Tablet', 'Capsule', 'Liquid', 'Injection', 'Powder', 'Other'];
+  const SCHEDULES = [{ value: 'daily', label: 'Every day' }, { value: 'weekdays', label: 'Weekdays' }, { value: 'custom', label: 'Custom days' }, { value: 'asNeeded', label: 'As needed' }];
+  const now = new Date();
+  let pills = safeLoad(KEYS.pills, []), doses = safeLoad(KEYS.doses, []), glucose = safeLoad(KEYS.glucose, []), settings = safeLoad(KEYS.settings, { targetLow: 70, targetHigh: 180, glucoseUnit: 'mg/dL' });
+  let currentPage = 'today',
+    pageHistory = ['today'],
+    toastTimer,
+    editingGlucoseId = null,
+    highlightPillId = null,
+    lastBackPressAt = 0;
+
+  function go(page, options = {}) {
+    const { fromBack = false } = options;
+
+    if (!page || page === currentPage) return;
+
+    // Record each normal user navigation so Android Back retraces
+    // the actual route: Today > Pills > Glucose > More.
+    if (!fromBack) {
+      pageHistory.push(page);
+    }
+
+    currentPage = page;
+
+    $$('.page').forEach(p => {
+      p.classList.toggle('active', p.dataset.page === page);
+    });
+
+    $$('.nav-item').forEach(button => {
+      const active = button.dataset.nav === page;
+      button.classList.toggle('active', active);
+
+      if (active) {
+        button.setAttribute('aria-current', 'page');
+      } else {
+        button.removeAttribute('aria-current');
+      }
+    });
+
+    $('#main-content').focus({ preventScroll: true });
+    render();
+    window.location.hash = page;
+  }
+  function safeLoad(key, fallback) { try { const value = JSON.parse(localStorage.getItem(key)); return value == null ? fallback : value; } catch (_) { return fallback; } }
+  function save(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { toast('Could not save to this device. Check available storage.'); } }
+  function uid(prefix) { return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`; }
+  function esc(value = '') { return String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+  function dateKey(date = new Date()) { const d = new Date(date.getTime() - date.getTimezoneOffset() * 60000); return d.toISOString().slice(0, 10); }
+  function localISO(date = new Date()) { return `${dateKey(date)}T${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:00`; }
+  function parseLocal(dateString) { return new Date(String(dateString).length === 16 ? `${dateString}:00` : dateString); }
+  function fmtDate(date, options = { weekday: 'long', month: 'long', day: 'numeric' }) { return new Intl.DateTimeFormat(undefined, options).format(date); }
+  function fmtTime(time) { const [h, m] = String(time).split(':').map(Number); if (!Number.isFinite(h) || !Number.isFinite(m)) return time; const d = new Date(); d.setHours(h, m, 0, 0); return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(d); }
+  function fmtStamp(value) { const d = parseLocal(value); return Number.isNaN(d.getTime()) ? 'Unknown time' : `${fmtDate(d, { month: 'short', day: 'numeric' })} · ${new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(d)}`; }
+  function toast(message) { const el = $('#toast'); el.textContent = message; el.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 3200); }
+
+  function isScheduled(pill, date) { if (!pill.active || pill.schedule === 'asNeeded') return false; const key = dateKey(date); if (pill.startDate && key < pill.startDate) return false; if (pill.endDate && key > pill.endDate) return false; const day = date.getDay(); if (pill.schedule === 'weekdays' && (day === 0 || day === 6)) return false; if (pill.schedule === 'custom' && !(pill.days || []).includes(day)) return false; return true; }
+  function doseId(pillId, key, time) { return `${pillId}__${key}__${time}`; }
+  function ensureDoseRecords(date = new Date()) { const key = dateKey(date); const expected = []; for (const p of pills) { if (!isScheduled(p, date)) continue; for (const time of p.times || []) { const id = doseId(p.id, key, time); expected.push({ id, pillId: p.id, scheduledAt: `${key}T${time}:00`, status: 'pending', takenAt: '', note: '' }); } } let changed = false; for (const dose of expected) { if (!doses.some(d => d.id === dose.id)) { doses.push(dose); changed = true; } } if (changed) save(KEYS.doses, doses); }
+  function getDoseTime(dose) { return parseLocal(dose.scheduledAt); }
+  function doseStatus(dose) { if (dose.status !== 'pending') return dose.status; const d = getDoseTime(dose); if (d.getTime() < Date.now() - 60000) return 'missed'; if (Math.abs(d.getTime() - Date.now()) <= 30 * 60000) return 'due'; return 'upcoming'; }
+  function doseLabel(status) { return ({ pending: 'Upcoming', due: 'Due now', taken: 'Taken', skipped: 'Skipped', missed: 'Missed' })[status] || status; }
+  function updateDose(id, status) { const d = doses.find(x => x.id === id); if (!d) return; d.status = status; d.takenAt = status === 'taken' ? localISO() : ''; save(KEYS.doses, doses); renderToday(); if (currentPage === 'pills') renderPills(); toast(status === 'taken' ? 'Dose marked as taken.' : status === 'skipped' ? 'Dose skipped.' : 'Dose updated.'); }
+  function todayDoses() { ensureDoseRecords(); const key = dateKey(); return doses.filter(d => String(d.scheduledAt).slice(0, 10) === key).map(d => ({ ...d, pill: pills.find(p => p.id === d.pillId) })).filter(d => d.pill).sort((a, b) => getDoseTime(a) - getDoseTime(b)); }
+  function renderToday() {
+    const list = $('#today-dose-list'); const all = todayDoses(); const active = pills.filter(p => p.active).length; const completed = all.filter(d => d.status === 'taken').length; const remaining = all.filter(d => !['taken', 'skipped'].includes(d.status)).length; const pct = all.length ? Math.round(completed / all.length * 100) : 0; $('#greeting').textContent = new Date().getHours() < 12 ? 'YOUR MORNING CHECK-IN' : new Date().getHours() < 17 ? 'YOUR AFTERNOON CHECK-IN' : 'YOUR EVENING CHECK-IN'; $('#today-date').textContent = fmtDate(new Date()); $('#date-day').textContent = String(new Date().getDate()).padStart(2, '0'); $('#date-month').textContent = new Intl.DateTimeFormat(undefined, { month: 'short' }).format(new Date()).toUpperCase(); $('#progress-title').textContent = all.length ? (completed === all.length ? 'All caught up' : `${completed} of ${all.length} taken`) : 'Your day, at a glance'; $('#progress-copy').textContent = !all.length ? 'Your schedule will appear here.' : completed === all.length ? 'All scheduled doses are complete.' : `${remaining} dose${remaining === 1 ? '' : 's'} remaining today.`; $('#progress-percent').textContent = `${pct}%`; $('#progress-ring').style.background = `conic-gradient(#d6f2df ${pct * 3.6}deg,rgba(255,255,255,.2) ${pct * 3.6}deg)`; $('#progress-ring').setAttribute('aria-label', `${pct}% of scheduled doses taken`); $('#progress-bar').style.width = `${pct}%`; $('#stat-scheduled').textContent = all.length; $('#stat-taken').textContent = completed; $('#stat-remaining').textContent = remaining;
+    if (!all.length) { list.innerHTML = `<div class="empty-state"><div class="empty-icon">＋</div><h3>${pills.some(p => p.active) ? 'Nothing scheduled today' : 'Stay on top of your medications'}</h3><p>${pills.some(p => p.active) ? 'You have no active medication doses scheduled for today.' : 'Add your first medication to build today’s schedule and receive reminders on Android.'}</p><button class="primary-button" id="empty-add-pill">Add medication</button></div>`; $('#empty-add-pill').onclick = () => openPillModal(); }
+    else list.innerHTML = all.map(d => { const p = d.pill, s = doseStatus(d), taken = s === 'taken', final = ['taken', 'skipped'].includes(s); return `<article class="dose-card ${highlightPillId === p.id ? 'dose-highlight' : ''}" style="--pill-color:${esc(p.color || COLORS[0])}" id="dose-${esc(d.id)}"><div class="dose-time">${esc(fmtTime(String(d.scheduledAt).slice(11, 16)))}</div><div class="dose-rail"></div><div class="dose-main"><h3>${esc(p.name)}</h3><p>${esc(p.dosage || p.form || 'Medication')}${p.notes ? ` · ${esc(p.notes)}` : ''}</p><span class="dose-status ${esc(s)}">${esc(doseLabel(s))}${taken && d.takenAt ? ` · ${esc(fmtTime(d.takenAt.slice(11, 16)))}` : ''}</span></div><div class="dose-actions">${taken ? `<button class="take-button done" data-dose-action="undo" data-id="${esc(d.id)}">Undo</button>` : final ? `<button class="take-button done" data-dose-action="undo" data-id="${esc(d.id)}">Undo</button>` : `<button class="take-button" data-dose-action="taken" data-id="${esc(d.id)}">Mark taken</button><button class="mini-action" data-dose-action="skipped" data-id="${esc(d.id)}">Skip</button>`}</div></article>`; }).join(''); list.querySelectorAll('[data-dose-action]').forEach(btn => btn.onclick = () => { const status = btn.dataset.doseAction; updateDose(btn.dataset.id, status === 'undo' ? 'pending' : status); }); const next = all.find(d => !['taken', 'skipped'].includes(doseStatus(d))); $('#daily-insight').textContent = !pills.length ? 'Add a medication to build your daily schedule.' : !all.length ? 'You have no scheduled doses today. Your medication list is available any time.' : !next ? 'You completed all scheduled doses for today.' : `Your next dose is ${next.pill.name} at ${fmtTime(String(next.scheduledAt).slice(11, 16))}.`; highlightPillId = null;
+  }
+  function scheduleSummary(p) { if (p.schedule === 'asNeeded') return 'As needed · no automatic reminders'; const days = p.schedule === 'daily' ? 'Every day' : p.schedule === 'weekdays' ? 'Weekdays' : (p.days || []).sort((a, b) => a - b).map(d => DAYS[d]).join(', ') || 'No days selected'; return `${days}${(p.times || []).length ? ' at ' + p.times.map(fmtTime).join(' and ') : ''}`; }
+  function renderPills() { const filter = $('#pill-filter').value, query = $('#pill-search').value.trim().toLowerCase(); const visible = pills.filter(p => (filter === 'all' || (filter === 'active' ? p.active : !p.active)) && `${p.name} ${p.dosage || ''}`.toLowerCase().includes(query)); $('#pill-count').textContent = `${pills.filter(p => p.active).length} active medication${pills.filter(p => p.active).length === 1 ? '' : 's'}`; const list = $('#pill-list'); if (!visible.length) { list.innerHTML = `<div class="empty-state"><div class="empty-icon">✚</div><h3>${pills.length ? 'No matching medications' : 'Your list starts here'}</h3><p>${pills.length ? 'Try another search or filter.' : 'Add your first medication to keep its dose and reminder schedule organized.'}</p><button class="primary-button" id="pill-empty-add">Add medication</button></div>`; $('#pill-empty-add').onclick = () => openPillModal(); return; } list.innerHTML = visible.map(p => `<article class="med-card" style="--pill-color:${esc(p.color || COLORS[0])}"><div class="med-card-top"><div class="med-dot">${p.form === 'Capsule' ? '◒' : p.form === 'Liquid' ? '◉' : p.form === 'Injection' ? '↗' : '＋'}</div><div class="med-info"><h3>${esc(p.name)}</h3><p>${esc([p.dosage, p.form].filter(Boolean).join(' · ') || 'Medication')}</p></div><button class="med-menu" aria-label="More actions for ${esc(p.name)}" data-med-menu="${esc(p.id)}">⋯</button></div><div class="med-details"><div class="med-detail">◷ <span>${esc(scheduleSummary(p))}</span></div>${p.startDate ? `<div class="med-detail">▦ <span>Started ${esc(fmtDate(parseLocal(p.startDate + 'T12:00:00'), { month: 'short', day: 'numeric', year: 'numeric' }))}${p.endDate ? ' · Ends ' + esc(p.endDate) : ''}</span></div>` : ''}${p.quantity !== '' && p.quantity != null ? `<div class="med-detail">▤ <span><b>${esc(p.quantity)}</b> remaining</span></div>` : ''}${p.notes ? `<div class="med-detail">✎ <span>${esc(p.notes)}</span></div>` : ''}</div><div class="med-bottom"><span class="pill-state ${p.active ? '' : 'paused'}">${p.active ? 'Active' : 'Reminders paused'}</span><div class="med-actions"><button data-edit-pill="${esc(p.id)}">Edit</button><button data-toggle-pill="${esc(p.id)}">${p.active ? 'Pause' : 'Resume'}</button></div></div></article>`).join(''); list.querySelectorAll('[data-edit-pill]').forEach(b => b.onclick = () => openPillModal(b.dataset.editPill)); list.querySelectorAll('[data-toggle-pill]').forEach(b => b.onclick = () => togglePill(b.dataset.togglePill)); list.querySelectorAll('[data-med-menu]').forEach(b => b.onclick = () => showPillActions(b.dataset.medMenu)); }
+  function showPillActions(id) { const p = pills.find(x => x.id === id); if (!p) return; openModal(`<div class="modal-head"><h2>${esc(p.name)}</h2><button class="close-modal" data-close aria-label="Close">×</button></div><p class="modal-intro">Medication options</p><div class="settings-actions vertical"><button class="settings-link" id="action-edit"><span><strong>Edit medication</strong><small>Update dose, schedule or notes</small></span><b>›</b></button><button class="settings-link" id="action-toggle"><span><strong>${p.active ? 'Pause reminders' : 'Resume reminders'}</strong><small>Keep the medication record</small></span><b>›</b></button><button class="settings-link" id="action-history"><span><strong>View history</strong><small>Review logged doses</small></span><b>›</b></button><button class="settings-link danger-link" id="action-delete"><span><strong>Delete medication</strong><small>Remove this medication and its history</small></span><b>×</b></button></div>`); $('#action-edit').onclick = () => { closeModal(); openPillModal(id) }; $('#action-toggle').onclick = () => { closeModal(); togglePill(id) }; $('#action-history').onclick = () => { closeModal(); go('today'); toast(`Dose history is shown in today's schedule; ${doses.filter(d => d.pillId === id).length} record(s) stored.`) }; $('#action-delete').onclick = () => { closeModal(); confirmAction('Delete medication?', `This removes ${p.name} and its dose history from this device.`, () => deletePill(id)); }; }
+  function togglePill(id) { const p = pills.find(x => x.id === id); if (!p) return; p.active = !p.active; save(KEYS.pills, pills); if (!p.active) { HealthLedgerNotifications.cancelPill(p).then(() => { }); toast('Reminders paused.'); } else { HealthLedgerNotifications.schedulePill(p).then(r => toast(r.supported && r.scheduled ? `Reminders resumed (${r.scheduled} scheduled).` : 'Medication resumed. Browser preview does not deliver native reminders.')); } ensureDoseRecords(); render(); }
+  function deletePill(id) { const p = pills.find(x => x.id === id); if (!p) return; HealthLedgerNotifications.cancelPill(p).then(() => { }); pills = pills.filter(x => x.id !== id); doses = doses.filter(d => d.pillId !== id); save(KEYS.pills, pills); save(KEYS.doses, doses); render(); toast('Medication deleted.'); }
+  function openModal(html) { const root = $('#modal-root'); root.innerHTML = `<div class="modal-backdrop" role="presentation"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">${html}</section></div>`; const backdrop = root.querySelector('.modal-backdrop'); backdrop.addEventListener('click', e => { if (e.target === backdrop) closeModal(); }); root.querySelectorAll('[data-close]').forEach(b => b.onclick = closeModal); const first = root.querySelector('input,button,select,textarea'); if (first) setTimeout(() => first.focus(), 20); document.addEventListener('keydown', escModal, { once: true }); }
+  function escModal(e) { if (e.key === 'Escape') { closeModal(); return; } document.addEventListener('keydown', escModal, { once: true }); }
+  function closeModal() { $('#modal-root').innerHTML = ''; }
+  function confirmAction(title, body, onConfirm, danger = true) { openModal(`<div class="modal-head"><h2 id="modal-title">${esc(title)}</h2><button class="close-modal" data-close aria-label="Close">×</button></div><p class="modal-intro">${esc(body)}</p><div class="modal-actions"><button class="secondary-button" data-close>Cancel</button><button class="primary-button ${danger ? 'danger-button' : ''}" id="confirm-action">Confirm</button></div>`); $('#confirm-action').onclick = () => { closeModal(); onConfirm(); }; }
+  function openPillModal(id = null) {
+    const old = pills.find(p => p.id === id); const p = old || { name: '', dosage: '', form: 'Tablet', color: COLORS[0], times: ['08:00'], schedule: 'daily', days: [1, 2, 3, 4, 5, 6, 0], startDate: dateKey(), endDate: '', notes: '', active: true, quantity: '' }; const colorButtons = COLORS.map(c => `<button type="button" class="swatch ${c === p.color ? 'selected' : ''}" style="--swatch:${c}" data-color="${c}" aria-label="Choose color ${c}" aria-pressed="${c === p.color}"></button>`).join(''); openModal(`<div class="modal-head"><h2 id="modal-title">${old ? 'Edit medication' : 'Add medication'}</h2><button class="close-modal" data-close aria-label="Close">×</button></div><p class="modal-intro">${old ? 'Keep your medication details up to date.' : 'Build a routine that works for you.'}</p><form id="pill-form" class="modal-form" novalidate><label class="field"><span>Medication name <b>*</b></span><input id="med-name" maxlength="100" required placeholder="e.g., Metformin" value="${esc(p.name)}"><small class="error-text" id="med-name-error"></small></label><div class="modal-grid"><label class="field"><span>Dosage</span><input id="med-dosage" maxlength="60" placeholder="e.g., 500 mg" value="${esc(p.dosage || '')}"></label><label class="field"><span>Form</span><select id="med-form">${FORMS.map(f => `<option ${f.toLowerCase() === String(p.form).toLowerCase() ? 'selected' : ''}>${f}</option>`).join('')}</select></label></div><div class="field"><span>Color marker</span><div class="swatches">${colorButtons}</div><input id="med-color" type="hidden" value="${esc(p.color)}"></div><div class="field"><span>Reminder times</span><div class="time-list" id="time-list">${(p.times || []).map((t, i) => `<div class="time-row"><input aria-label="Reminder time ${i + 1}" type="time" value="${esc(t)}" class="med-time"><button type="button" class="remove-time" aria-label="Remove reminder time">−</button></div>`).join('')}</div><button type="button" class="inline-button" id="add-time">＋ Add another reminder time</button></div><label class="field"><span>Frequency</span><select id="med-schedule">${SCHEDULES.map(s => `<option value="${s.value}" ${s.value === p.schedule ? 'selected' : ''}>${s.label}</option>`).join('')}</select></label><div class="field" id="days-field" ${p.schedule === 'custom' ? '' : 'hidden'}><span>Repeat on</span><div class="days-picker">${DAYS.map((d, i) => `<button type="button" class="day-toggle ${(p.days || []).includes(i) ? 'selected' : ''}" data-day="${i}" aria-pressed="${(p.days || []).includes(i)}">${d}</button>`).join('')}</div><small class="error-text" id="days-error"></small></div><div class="modal-grid"><label class="field"><span>Start date</span><input id="med-start" type="date" value="${esc(p.startDate || dateKey())}"></label><label class="field"><span>End date <small>Optional</small></span><input id="med-end" type="date" value="${esc(p.endDate || '')}"></label></div><label class="field"><span>Remaining quantity <small>Optional</small></span><input id="med-quantity" type="number" min="0" step="1" placeholder="e.g., 30" value="${esc(p.quantity ?? '')}"></label><label class="field"><span>Notes <small>Optional</small></span><textarea id="med-notes" rows="2" maxlength="500" placeholder="Take with food">${esc(p.notes || '')}</textarea></label><label class="check-row"><input id="med-active" type="checkbox" ${p.active ? 'checked' : ''}> Medication is active and reminders are enabled</label><p class="modal-note">Health Ledger organizes the schedule you enter. Follow your clinician’s instructions for medication use.</p><div class="modal-actions"><button type="button" class="secondary-button" data-close>Cancel</button><button type="submit" class="primary-button">${old ? 'Save changes' : 'Save medication'}</button></div></form>`);
+    let selectedColor = p.color; $('#modal-root').querySelectorAll('[data-color]').forEach(b => b.onclick = () => { selectedColor = b.dataset.color; $('#med-color').value = selectedColor; $('#modal-root').querySelectorAll('[data-color]').forEach(x => { x.classList.toggle('selected', x === b); x.setAttribute('aria-pressed', String(x === b)); }); });
+    $('#add-time').onclick = () => { const row = document.createElement('div'); row.className = 'time-row'; row.innerHTML = `<input aria-label="Reminder time" type="time" value="12:00" class="med-time"><button type="button" class="remove-time" aria-label="Remove reminder time">−</button>`; $('#time-list').append(row); row.querySelector('input').focus(); }; $('#time-list').onclick = e => { if (e.target.closest('.remove-time')) { const rows = $$('.time-row'); if (rows.length > 1) e.target.closest('.time-row').remove(); else e.target.closest('input')?.setAttribute('value', ''); } };
+    $('#med-schedule').onchange = () => $('#days-field').hidden = $('#med-schedule').value !== 'custom'; $('#days-field').querySelectorAll('[data-day]').forEach(b => b.onclick = () => { b.classList.toggle('selected'); b.setAttribute('aria-pressed', String(b.classList.contains('selected'))); });
+    $('#pill-form').onsubmit = async e => { e.preventDefault(); const name = $('#med-name').value.trim(); const error = $('#med-name-error'); if (!name) { error.textContent = 'Enter a medication name.'; $('#med-name').focus(); return; } error.textContent = ''; const schedule = $('#med-schedule').value; const times = [...$('#time-list').querySelectorAll('.med-time')].map(x => x.value).filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).sort(); if (schedule !== 'asNeeded' && !times.length) { toast('Add at least one reminder time, or choose As needed.'); $('#time-list input').focus(); return; } const days = $$('#days-field [data-day].selected').map(b => Number(b.dataset.day)); if (schedule === 'custom' && !days.length) { $('#days-error').textContent = 'Choose at least one day.'; return; } $('#days-error').textContent = ''; const startDate = $('#med-start').value || dateKey(), endDate = $('#med-end').value; if (endDate && endDate < startDate) { toast('End date must be on or after the start date.'); return; } const updated = { id: old?.id || uid('pill'), name, dosage: $('#med-dosage').value.trim(), form: $('#med-form').value, color: $('#med-color').value, times, schedule, days: schedule === 'custom' ? days : [], startDate, endDate, notes: $('#med-notes').value.trim(), active: $('#med-active').checked, quantity: $('#med-quantity').value, createdAt: old?.createdAt || new Date().toISOString() }; if (old) await HealthLedgerNotifications.cancelPill(old); if (old) pills = pills.map(x => x.id === old.id ? updated : x); else pills.push(updated); save(KEYS.pills, pills); ensureDoseRecords(); closeModal(); render(); const result = await HealthLedgerNotifications.schedulePill(updated); if (updated.active && updated.schedule !== 'asNeeded' && updated.times.length) { if (result.supported && result.scheduled) toast(`${old ? 'Medication updated' : 'Medication added'} and ${result.scheduled} reminder(s) scheduled.`); else toast('Medication saved. Reminder notifications are available in the Android app.'); } else toast(old ? 'Medication updated.' : 'Medication saved.'); };
+  }
+  function mmol(value) { return value / 18.0182; } function mgdl(value) { return value * 18.0182; }
+  function displayReading(entry, unit = $('#display-unit').value) { return unit === 'mmol/L' ? mmol(entry.unit === 'mg/dL' ? entry.value : mgdl(entry.value)) : entry.unit === 'mg/dL' ? entry.value : mgdl(entry.value); }
+  function readingStatus(value, unit) { const v = unit === 'mmol/L' ? mgdl(value) : value; if (v < settings.targetLow) return 'Below personal range'; if (v > settings.targetHigh) return 'Above personal range'; return 'Within personal range'; }
+  function renderGlucose() {
+    const sorted = [...glucose].sort((a, b) => parseLocal(b.at) - parseLocal(a.at)); const latest = sorted[0]; const unit = $('#display-unit').value; $('#glucose-unit').value = unit; $('#latest-unit').textContent = unit; if (!latest) { $('#latest-value').textContent = '—'; $('#latest-date').textContent = 'No readings recorded'; $('#latest-context').textContent = 'Your readings will appear here once you log one.'; } else { const value = displayReading(latest, unit); $('#latest-value').textContent = unit === 'mmol/L' ? value.toFixed(1) : Math.round(value); $('#latest-date').textContent = fmtStamp(latest.at); $('#latest-context').textContent = `${latest.context || 'No meal context'} · ${readingStatus(value, unit)} (based on your personal range)`; }
+    const cutoff = $('#trend-range').value === 'all' ? 0 : Date.now() - Number($('#trend-range').value) * 86400000; const trend = sorted.filter(g => parseLocal(g.at).getTime() >= cutoff).sort((a, b) => parseLocal(a.at) - parseLocal(b.at)); drawChart(trend, unit); const list = $('#glucose-history'); if (!sorted.length) { list.innerHTML = '<div class="empty-state"><div class="empty-icon">⌁</div><h3>No glucose readings yet</h3><p>Log a reading to begin tracking your glucose history and trends.</p></div>'; return; } list.innerHTML = sorted.map(g => { const value = displayReading(g, unit); return `<article class="history-item"><div class="history-reading"><strong>${unit === 'mmol/L' ? value.toFixed(1) : Math.round(value)} ${esc(unit)}</strong><p>${esc(g.context || 'Other')}${g.notes ? ` · ${esc(g.notes)}` : ''}</p></div><div class="history-meta">${esc(fmtStamp(g.at))}<div class="history-buttons"><button data-edit-glucose="${esc(g.id)}" aria-label="Edit reading">Edit</button><button data-delete-glucose="${esc(g.id)}" aria-label="Delete reading">Delete</button></div></div></article>`; }).join(''); list.querySelectorAll('[data-edit-glucose]').forEach(b => b.onclick = () => editGlucose(b.dataset.editGlucose)); list.querySelectorAll('[data-delete-glucose]').forEach(b => b.onclick = () => confirmAction('Delete this reading?', 'This reading will be removed from your local history.', () => { glucose = glucose.filter(g => g.id !== b.dataset.deleteGlucose); save(KEYS.glucose, glucose); renderGlucose(); toast('Reading deleted.'); }));
+  }
+  function drawChart(data, unit) { const root = $('#glucose-chart'); if (!data.length) { root.innerHTML = '<p class="empty-inline">No readings in this date range yet.</p>'; return; } const w = 620, h = 190, pad = { l: 36, r: 12, t: 14, b: 30 }; const values = data.map(g => displayReading(g, unit)); let min = Math.min(...values), max = Math.max(...values); if (min === max) { min -= unit === 'mmol/L' ? 1 : 18; max += unit === 'mmol/L' ? 1 : 18; } const gap = (max - min) * .18; min = Math.max(0, min - gap); max += gap; const x = i => pad.l + (data.length === 1 ? (w - pad.l - pad.r) / 2 : i * (w - pad.l - pad.r) / (data.length - 1)); const y = v => pad.t + (max - v) * (h - pad.t - pad.b) / (max - min); const points = values.map((v, i) => `${x(i)},${y(v)}`).join(' '); const ticks = [min, (min + max) / 2, max]; const grid = ticks.map(v => `<g><line x1="${pad.l}" y1="${y(v)}" x2="${w - pad.r}" y2="${y(v)}" stroke="var(--border)" stroke-dasharray="3 4"/><text x="${pad.l - 7}" y="${y(v) + 4}" fill="var(--muted)" font-size="10" text-anchor="end">${unit === 'mmol/L' ? v.toFixed(1) : Math.round(v)}</text></g>`).join(''); const circles = values.map((v, i) => `<circle cx="${x(i)}" cy="${y(v)}" r="4" fill="var(--accent)" stroke="var(--card)" stroke-width="2"><title>${esc(fmtStamp(data[i].at))}: ${unit === 'mmol/L' ? v.toFixed(1) : Math.round(v)} ${esc(unit)}</title></circle>`).join(''); const labels = [0, Math.floor((data.length - 1) / 2), data.length - 1].filter((v, i, a) => a.indexOf(v) === i).map(i => `<text x="${x(i)}" y="${h - 7}" fill="var(--muted)" font-size="10" text-anchor="${i === 0 ? 'start' : i === data.length - 1 ? 'end' : 'middle'}">${esc(fmtDate(parseLocal(data[i].at), { month: 'short', day: 'numeric' }))}</text>`).join(''); root.innerHTML = `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Glucose trend chart with ${data.length} readings"><title>Glucose trend, ${data.length} readings, in ${esc(unit)}</title>${grid}<polyline points="${points}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>${circles}${labels}</svg>`; }
+  function resetGlucoseForm() { editingGlucoseId = null; $('#glucose-form').reset(); $('#glucose-time').value = localISO().slice(0, 16); $('#glucose-unit').value = $('#display-unit').value; $('#glucose-form').querySelector('button[type="submit"]').textContent = 'Log reading'; }
+  function editGlucose(id) { const g = glucose.find(x => x.id === id); if (!g) return; editingGlucoseId = id; $('#glucose-value').value = g.value; $('#glucose-unit').value = g.unit; $('#glucose-context').value = g.context || 'Other'; $('#glucose-time').value = String(g.at).slice(0, 16); $('#glucose-notes').value = g.notes || ''; $('#glucose-form').querySelector('button[type="submit"]').textContent = 'Save changes'; $('#glucose-form').scrollIntoView({ behavior: 'smooth', block: 'center' }); $('#glucose-value').focus({ preventScroll: true }); }
+  $('#glucose-form').onsubmit = e => { e.preventDefault(); const value = Number($('#glucose-value').value); if (!Number.isFinite(value) || value <= 0 || value > 1000) { toast('Enter a valid glucose reading.'); return; } const entry = { id: editingGlucoseId || uid('glucose'), value, unit: $('#glucose-unit').value, context: $('#glucose-context').value, at: $('#glucose-time').value, notes: $('#glucose-notes').value.trim(), createdAt: editingGlucoseId ? glucose.find(g => g.id === editingGlucoseId)?.createdAt : new Date().toISOString() }; if (!entry.at) { toast('Choose the date and time for this reading.'); return; } if (editingGlucoseId) glucose = glucose.map(g => g.id === editingGlucoseId ? entry : g); else glucose.push(entry); save(KEYS.glucose, glucose); resetGlucoseForm(); renderGlucose(); toast(editingGlucoseId ? 'Reading updated.' : 'Glucose reading saved.'); };
+  function applyTheme(theme, persist = true) {
+  const validThemes = ['system', 'light', 'dark', 'osrs'];
+  const selectedTheme = validThemes.includes(theme) ? theme : 'system';
+
+  document.documentElement.dataset.theme = selectedTheme;
+
+  const themeSelect = $('#theme-select');
+  if (themeSelect) {
+    themeSelect.value = selectedTheme;
+  }
+
+  if (persist) {
+    save(KEYS.theme, selectedTheme);
+  }
+}
+  async function refreshNotificationStatus() { const native = HealthLedgerNotifications.isNative(); const status = $('#notification-status'), dot = $('#notification-dot'), exact = $('#exact-status'); if (!native) { status.textContent = 'Browser preview mode'; dot.style.background = 'var(--amber)'; exact.textContent = 'Available in Android app where supported'; $('#notification-diagnostic').textContent = 'Native scheduled notifications are available after installing this app on Android. Medication schedules and records still work in browser mode.'; $('#open-exact-settings').disabled = true; $('#open-notification-settings').disabled = true; return; } $('#open-exact-settings').disabled = false; $('#open-notification-settings').disabled = false; const p = await HealthLedgerNotifications.plugin().checkPermissions().catch(() => ({ display: 'unknown' })); const granted = p.display === 'granted'; status.textContent = granted ? 'Enabled' : 'Not allowed'; dot.style.background = granted ? 'var(--accent)' : 'var(--amber)'; const a = await HealthLedgerNotifications.checkExactAlarmPermission(); exact.textContent = !a.supported ? 'Check Android settings if reminders are late' : a.granted ? 'Enabled' : 'Needs Android setting'; $('#notification-diagnostic').textContent = granted ? 'Notification permission is enabled. Use Resync reminders after changing medication schedules.' : 'Allow notification access to receive scheduled medication reminders.'; }
+  async function syncNotifications() { const result = await HealthLedgerNotifications.syncPills(pills); let message = result.message || 'Reminder sync finished.'; if (result.exactAlarm?.supported && result.exactAlarm.granted === false) message += ' For reminders at the exact selected time, enable Alarms & reminders for Health Ledger in Android settings.'; $('#notification-diagnostic').textContent = message; await refreshNotificationStatus(); toast(result.supported ? message : 'Browser preview mode: medication schedules saved, but native notifications are unavailable.'); }
+  function render() { ensureDoseRecords(); if (currentPage === 'today') renderToday(); if (currentPage === 'pills') renderPills(); if (currentPage === 'glucose') renderGlucose(); if (currentPage === 'more') refreshNotificationStatus(); }
+  async function exportData() {
+  const data = {
+    app: 'Health Ledger',
+    version: '1.0.0',
+    exportedAt: new Date().toISOString(),
+    pills: pills,
+    doses: doses,
+    glucose: glucose,
+    settings: settings,
+    theme: localStorage.getItem(KEYS.theme) || 'system'
+  };
+
+  const fileName = `health-ledger-backup-${dateKey()}.json`;
+  const contents = JSON.stringify(data, null, 2);
+
+  const cap = window.Capacitor;
+  const Filesystem = cap?.Plugins?.Filesystem;
+
+  const isNative =
+    typeof cap?.isNativePlatform === 'function'
+      ? cap.isNativePlatform()
+      : ['android', 'ios'].includes(cap?.getPlatform?.());
+
+  if (!isNative) {
+    const blob = new Blob([contents], {
+      type: 'application/json'
+    });
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+
+    link.href = url;
+    link.download = fileName;
+    link.style.display = 'none';
+
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    toast('Backup download started.');
+    return;
+  }
+
+  if (!Filesystem) {
+    toast(
+      'Filesystem plugin is unavailable. Sync Android and rebuild the app.'
+    );
+    return;
+  }
+
+  const DownloadsExport =
+  window.Capacitor?.registerPlugin
+    ? window.Capacitor.registerPlugin('DownloadsExport')
+    : window.Capacitor?.Plugins?.DownloadsExport;
+
+if (!DownloadsExport) {
+  const names = Object.keys(
+    window.Capacitor?.Plugins || {}
+  ).join(', ');
+
+  toast(
+    'Downloads export unavailable. Plugins: ' +
+    (names || 'none')
+  );
+  return;
+}
+
+try {
+  await DownloadsExport.saveJson({
+    filename: fileName,
+    contents: contents
+  });
+
+  toast('Backup saved to Downloads/Health Ledger.');
+} catch (error) {
+  console.error(
+    'Health Ledger Downloads export failed:',
+    error
+  );
+
+  toast(
+    'Could not save backup: ' +
+    (error?.message || JSON.stringify(error) || 'unknown error')
+  );
+}
+}
+  function importData(file) { const reader = new FileReader(); reader.onload = () => { try { const data = JSON.parse(reader.result); if (data.app !== 'Health Ledger' || !Array.isArray(data.pills) || !Array.isArray(data.doses) || !Array.isArray(data.glucose)) throw new Error('This file is not a Health Ledger backup.'); confirmAction('Import backup?', 'Imported records will replace the current medication, dose and glucose data on this device.', () => { pills = data.pills; doses = data.doses; glucose = data.glucose; settings = data.settings || settings; save(KEYS.pills, pills); save(KEYS.doses, doses); save(KEYS.glucose, glucose); save(KEYS.settings, settings); if (data.theme) applyTheme(data.theme); syncNotifications(); render(); toast('Backup imported.'); }, false); } catch (err) { toast(err.message || 'Could not read that backup file.'); } }; reader.readAsText(file); }
+  function loadDemo() { confirmAction('Load demo data?', 'Sample medications and glucose readings will be added alongside your existing records.', () => { const today = new Date(); const mkDate = (offset, hour, minute) => { const d = new Date(today); d.setDate(d.getDate() - offset); d.setHours(hour, minute, 0, 0); return localISO(d); }; const demo = [{ id: uid('pill'), name: 'Metformin', dosage: '500 mg', form: 'Tablet', color: COLORS[0], times: ['08:00', '20:00'], schedule: 'daily', days: [], startDate: dateKey(), endDate: '', notes: 'Take with food', active: true, quantity: '', createdAt: new Date().toISOString() }, { id: uid('pill'), name: 'Vitamin D3', dosage: '2,000 IU', form: 'Capsule', color: COLORS[1], times: ['08:00'], schedule: 'daily', days: [], startDate: dateKey(), endDate: '', notes: '', active: true, quantity: '', createdAt: new Date().toISOString() }, { id: uid('pill'), name: 'Lisinopril', dosage: '10 mg', form: 'Tablet', color: COLORS[2], times: ['20:00'], schedule: 'weekdays', days: [], startDate: dateKey(), endDate: '', notes: '', active: true, quantity: '', createdAt: new Date().toISOString() }]; pills.push(...demo); glucose.push({ id: uid('glucose'), value: 102, unit: 'mg/dL', context: 'Fasting', at: mkDate(0, 7, 42), notes: '', createdAt: new Date().toISOString() }, { id: uid('glucose'), value: 118, unit: 'mg/dL', context: 'After meal', at: mkDate(1, 13, 5), notes: '', createdAt: new Date().toISOString() }, { id: uid('glucose'), value: 96, unit: 'mg/dL', context: 'Fasting', at: mkDate(3, 7, 30), notes: '', createdAt: new Date().toISOString() }, { id: uid('glucose'), value: 109, unit: 'mg/dL', context: 'Before meal', at: mkDate(5, 11, 50), notes: '', createdAt: new Date().toISOString() }); save(KEYS.pills, pills); save(KEYS.glucose, glucose); ensureDoseRecords(); syncNotifications(); render(); toast('Demo records added.'); }, false); }
+  function clearAll() { confirmAction('Clear all Health Ledger data?', 'This permanently removes medications, dose history, glucose readings and preferences stored by this app. Export a backup first if you may need it.', () => { pills.forEach(p => HealthLedgerNotifications.cancelPill(p)); pills = []; doses = []; glucose = []; settings = { targetLow: 70, targetHigh: 180, glucoseUnit: 'mg/dL' };[KEYS.pills, KEYS.doses, KEYS.glucose, KEYS.settings, KEYS.onboarding].forEach(k => localStorage.removeItem(k)); save(KEYS.settings, settings); render(); toast('Local records cleared.'); }); }
+
+function openHistoryCalendar() {
+  const today = new Date();
+  const dates = [];
+
+  for (let offset = 29; offset >= 0; offset -= 1) {
+    const date = new Date(today);
+    date.setHours(12, 0, 0, 0);
+    date.setDate(today.getDate() - offset);
+    dates.push(date);
+  }
+
+  const firstDate = dates[0];
+  const lastDate = dates[dates.length - 1];
+
+  const rangeLabel = `${fmtDate(firstDate, {
+    month: 'short',
+    day: 'numeric',
+  })} – ${fmtDate(lastDate, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  })}`;
+
+  const dateButtons = dates.map(date => {
+    const key = dateKey(date);
+    const isToday = key === dateKey(today);
+    const monthChanged =
+      date.getDate() === 1 || key === dateKey(firstDate);
+
+    return `
+      ${monthChanged ? `
+        <div class="history-month-marker">
+          ${esc(new Intl.DateTimeFormat(undefined, {
+            month: 'short',
+          }).format(date).toUpperCase())}
+        </div>
+      ` : ''}
+      <button
+        type="button"
+        class="history-day ${isToday ? 'today' : ''}"
+        data-history-date="${esc(key)}"
+        aria-label="View history for ${esc(fmtDate(date))}"
+      >
+        <span class="history-day-weekday">
+          ${esc(new Intl.DateTimeFormat(undefined, {
+            weekday: 'short',
+          }).format(date))}
+        </span>
+        <strong>${esc(date.getDate())}</strong>
+      </button>
+    `;
+  }).join('');
+
+  openModal(`
+    <div class="modal-head">
+      <div>
+        <h2 id="modal-title">Medication history</h2>
+        <p class="modal-intro">Last 30 days · ${esc(rangeLabel)}</p>
+      </div>
+      <button class="close-modal" data-close aria-label="Close">×</button>
+    </div>
+
+    <div class="history-calendar" aria-label="Medication history for the last 30 days">
+      ${dateButtons}
+    </div>
+  `);
+
+  $('#modal-root')
+  .querySelectorAll('[data-history-date]')
+  .forEach(button => {
+    button.onclick = () => {
+      openHistoryDay(button.dataset.historyDate);
+    };
+  });
+}
+
+function openHistoryDay(key) {
+  const selectedDate = parseLocal(`${key}T12:00:00`);
+  const selectedDateLabel = fmtDate(selectedDate, {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+
+  const dayDoses = doses
+    .filter(dose => String(dose.scheduledAt).slice(0, 10) === key)
+    .map(dose => ({
+      ...dose,
+      pill: pills.find(pill => pill.id === dose.pillId),
+    }))
+    .filter(dose => dose.pill)
+    .sort((a, b) => getDoseTime(a) - getDoseTime(b));
+
+  const dayGlucose = glucose
+    .filter(reading => String(reading.at).slice(0, 10) === key)
+    .sort((a, b) => parseLocal(b.at) - parseLocal(a.at));
+
+  const medicationContent = dayDoses.length
+    ? `
+      <div class="history-detail-list">
+        ${dayDoses.map(dose => {
+          const status = doseStatus(dose);
+          const scheduledTime = fmtTime(String(dose.scheduledAt).slice(11, 16));
+          const takenTime = dose.takenAt
+            ? fmtTime(String(dose.takenAt).slice(11, 16))
+            : '';
+
+          const statusDetail =
+            status === 'taken' && takenTime
+              ? `Taken at ${takenTime}`
+              : status === 'skipped'
+                ? 'Skipped'
+                : status === 'missed'
+                  ? 'Missed'
+                  : status === 'due'
+                    ? 'Due now'
+                    : 'Not yet taken';
+
+          return `
+  <article
+    class="history-detail-item"
+    style="--history-pill-color:${esc(dose.pill.color || COLORS[0])}"
+  >
+    <div
+      class="history-detail-marker history-pill-marker ${esc(status)}"
+      aria-hidden="true"
+    ></div>
+
+              <div class="history-detail-copy">
+                <strong>${esc(dose.pill.name)}</strong>
+                <span>
+                  ${esc([
+                    scheduledTime,
+                    dose.pill.dosage || dose.pill.form || 'Medication',
+                  ].filter(Boolean).join(' · '))}
+                </span>
+              </div>
+
+              <div class="history-detail-status ${esc(status)}">
+                <strong>${esc(doseLabel(status))}</strong>
+                <span>${esc(statusDetail)}</span>
+              </div>
+            </article>
+          `;
+        }).join('')}
+      </div>
+    `
+    : `
+      <div class="history-empty">
+        <span aria-hidden="true">◷</span>
+        <p>No medication doses were recorded for this day.</p>
+      </div>
+    `;
+
+  const glucoseUnit = $('#display-unit')?.value || settings.glucoseUnit || 'mg/dL';
+
+  const glucoseContent = dayGlucose.length
+    ? `
+      <div class="history-detail-list">
+        ${dayGlucose.map(reading => {
+          const value = displayReading(reading, glucoseUnit);
+          const valueText = glucoseUnit === 'mmol/L'
+            ? value.toFixed(1)
+            : Math.round(value);
+
+          return `
+            <article class="history-detail-item glucose">
+              <div class="history-detail-marker glucose" aria-hidden="true"></div>
+
+              <div class="history-detail-copy">
+                <strong>${esc(`${valueText} ${glucoseUnit}`)}</strong>
+                <span>
+                  ${esc([
+                    fmtTime(String(reading.at).slice(11, 16)),
+                    reading.context || 'Other',
+                  ].join(' · '))}
+                </span>
+              </div>
+
+              <div class="history-detail-status glucose">
+                <strong>${esc(readingStatus(value, glucoseUnit))}</strong>
+                ${reading.notes
+                  ? `<span>${esc(reading.notes)}</span>`
+                  : '<span>Glucose reading</span>'}
+              </div>
+            </article>
+          `;
+        }).join('')}
+      </div>
+    `
+    : `
+      <div class="history-empty">
+        <span aria-hidden="true">⌁</span>
+        <p>No glucose readings were recorded for this day.</p>
+      </div>
+    `;
+
+  openModal(`
+    <div class="modal-head">
+      <div>
+        <h2 id="modal-title">${esc(selectedDateLabel)}</h2>
+        <p class="modal-intro">Your recorded health history for this day.</p>
+      </div>
+      <button class="close-modal" data-close aria-label="Close">×</button>
+    </div>
+
+    <section class="history-detail-section" aria-labelledby="history-medications-title">
+      <div class="history-detail-heading">
+        <h3 id="history-medications-title">Medication history</h3>
+        <span>${dayDoses.length}</span>
+      </div>
+      ${medicationContent}
+    </section>
+
+    <section class="history-detail-section" aria-labelledby="history-glucose-title">
+      <div class="history-detail-heading">
+        <h3 id="history-glucose-title">Glucose readings</h3>
+        <span>${dayGlucose.length}</span>
+      </div>
+      ${glucoseContent}
+    </section>
+
+    <div class="modal-actions history-modal-actions">
+      <button
+        type="button"
+        class="secondary-button"
+        id="history-back-to-calendar"
+      >
+        Back to 30-day history
+      </button>
+    </div>
+  `);
+
+  $('#history-back-to-calendar').onclick = openHistoryCalendar;
+}
+
+  $$('.nav-item').forEach(b => b.onclick = () => go(b.dataset.nav)); $$('[data-go]').forEach(b => b.onclick = () => go(b.dataset.go)); $('#header-settings').onclick = () => go('more'); $('#quick-history').onclick = openHistoryCalendar; $('#add-pill').onclick = () => openPillModal(); $('#pill-filter').onchange = renderPills; $('#pill-search').oninput = renderPills; $('#display-unit').onchange = () => { settings.glucoseUnit = $('#display-unit').value; save(KEYS.settings, settings); renderGlucose(); }; $('#trend-range').onchange = renderGlucose; $('#theme-select').onchange = () => { applyTheme($('#theme-select').value); }; $('#export-data').onclick = exportData; $('#import-file').onchange = e => { if (e.target.files?.[0]) importData(e.target.files[0]); e.target.value = ''; }; $('#load-demo').onclick = loadDemo; $('#clear-data').onclick = clearAll; $('#resync-notifications').onclick = syncNotifications; $('#open-exact-settings').onclick = async () => { const result = await HealthLedgerNotifications.openExactAlarmSettings(); if (!result.opened) toast('Open Android Settings → Apps → Health Ledger → Alarms & reminders.'); else toast('Check the Alarms & reminders setting for Health Ledger.'); }; $('#open-notification-settings').onclick = async () => { if (!HealthLedgerNotifications.isNative()) { toast('Native notification settings are available in the Android app.'); return; } const p = await HealthLedgerNotifications.plugin(); if (p.openNotificationSettings) { await p.openNotificationSettings(); } else toast('Open Android Settings → Apps → Health Ledger → Notifications.'); };
+  const storedTheme = safeLoad(KEYS.theme, 'system');
+applyTheme(storedTheme, false);$('#display-unit').value = settings.glucoseUnit || 'mg/dL'; $('#glucose-time').value = localISO().slice(0, 16); $('#glucose-unit').value = settings.glucoseUnit || 'mg/dL';
+  const initial = (location.hash || '#today').slice(1);
+  const initialPage = ['today', 'pills', 'glucose', 'more'].includes(initial)
+    ? initial
+    : 'today';
+
+  currentPage = initialPage;
+  pageHistory = initialPage === 'today'
+    ? ['today']
+    : ['today', initialPage];
+
+  $$('.page').forEach(pageElement => {
+    pageElement.classList.toggle(
+      'active',
+      pageElement.dataset.page === currentPage
+    );
+  });
+
+  $$('.nav-item').forEach(button => {
+    const isActive = button.dataset.nav === currentPage;
+
+    button.classList.toggle('active', isActive);
+
+    if (isActive) {
+      button.setAttribute('aria-current', 'page');
+    } else {
+      button.removeAttribute('aria-current');
+    }
+  });
+
+  render();
+  HealthLedgerNotifications.registerActionListener(notification => { const id = notification?.extra?.pillId; if (id) { highlightPillId = id; go('today'); setTimeout(() => { const row = $$('.dose-card').find(el => el.textContent.includes(pills.find(p => p.id === id)?.name || '\u0000')); row?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 80); toast('Reminder opened. Review the dose and record it when appropriate.'); } });
+  window.addEventListener('focus', () => { ensureDoseRecords(); renderToday(); });
+
+  function installAndroidBackHandler() {
+    const App = window.Capacitor?.Plugins?.App;
+
+    // This runs only inside the installed Capacitor Android app.
+    // Browser preview keeps working normally.
+    if (!App?.addListener) return;
+
+    App.addListener('backButton', async () => {
+      // First Back closes any open add/edit/delete/settings dialog.
+      if (document.querySelector('#modal-root .modal-backdrop')) {
+        closeModal();
+        return;
+      }
+
+      // Remove the current page and display the page visited before it.
+      if (pageHistory.length > 1) {
+        pageHistory.pop();
+        const previousPage = pageHistory[pageHistory.length - 1];
+        go(previousPage, { fromBack: true });
+        return;
+      }
+
+      // At the root screen (Today): require a second press to exit.
+      const now = Date.now();
+
+      if (now - lastBackPressAt < 2000) {
+        await App.exitApp();
+        return;
+      }
+
+      lastBackPressAt = now;
+      toast('Press Back again to exit Health Ledger.');
+    });
+  }
+
+  installAndroidBackHandler();
+})();

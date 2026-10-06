@@ -1,0 +1,19 @@
+node_modules/
+.DS_Store
+android/.gradle/
+android/build/
+android/app/build/
+# Installed Node.js dependencies
+node_modules/
+
+# macOS Finder metadata
+.DS_Store
+
+# Android Gradle cache and temporary files
+android/.gradle/
+
+# Generated Android project build output
+android/build/
+
+# Generated Android app build output
+android/app/build/
