@@ -68,7 +68,156 @@
   function getDoseTime(dose) { return parseLocal(dose.scheduledAt); }
   function doseStatus(dose) { if (dose.status !== 'pending') return dose.status; const d = getDoseTime(dose); if (d.getTime() < Date.now() - 60000) return 'missed'; if (Math.abs(d.getTime() - Date.now()) <= 30 * 60000) return 'due'; return 'upcoming'; }
   function doseLabel(status) { return ({ pending: 'Upcoming', due: 'Due now', taken: 'Taken', skipped: 'Skipped', missed: 'Missed' })[status] || status; }
-  function updateDose(id, status) { const d = doses.find(x => x.id === id); if (!d) return; d.status = status; d.takenAt = status === 'taken' ? localISO() : ''; save(KEYS.doses, doses); renderToday(); if (currentPage === 'pills') renderPills(); toast(status === 'taken' ? 'Dose marked as taken.' : status === 'skipped' ? 'Dose skipped.' : 'Dose updated.'); }
+  function inventoryNumber(value) {
+  if (value == null || String(value).trim() === '') return null;
+
+  const number = Number(value);
+
+  if (!Number.isFinite(number) || number < 0) return null;
+
+  return Number(number.toFixed(6));
+}
+
+function updateDose(id, status) {
+  if (!['pending', 'taken', 'skipped'].includes(status)) return;
+
+  const dose = doses.find(item => item.id === id);
+  if (!dose || dose.status === status) return;
+
+  const pill = pills.find(item => item.id === dose.pillId);
+  if (!pill) return;
+
+  const nextDose = { ...dose };
+  const nextPill = { ...pill };
+
+  const quantity = inventoryNumber(pill.quantity);
+  const unitsPerDose = inventoryNumber(pill.unitsPerDose);
+
+  let inventoryChanged = false;
+  let warning = '';
+
+  const enteringTaken =
+    dose.status !== 'taken' && status === 'taken';
+
+  const leavingTaken =
+    dose.status === 'taken' && status !== 'taken';
+
+  if (enteringTaken) {
+    nextDose.inventoryDeducted = 0;
+    nextDose.inventoryEpoch = pill.inventoryEpoch || '';
+
+    if (quantity !== null && unitsPerDose !== null && unitsPerDose > 0) {
+      const deducted = Math.min(quantity, unitsPerDose);
+
+      nextPill.quantity = Number(
+        (quantity - deducted).toFixed(6)
+      );
+
+      nextDose.inventoryDeducted = deducted;
+      inventoryChanged = deducted > 0;
+
+      if (quantity < unitsPerDose) {
+        warning =
+          ' Recorded supply was insufficient; check your remaining quantity.';
+      }
+    } else if (quantity !== null) {
+      warning =
+        ' Supply was not changed. Check your units per dose.';
+    }
+  }
+
+  if (leavingTaken) {
+    const deducted = inventoryNumber(dose.inventoryDeducted) || 0;
+
+    const sameInventoryBaseline =
+      (dose.inventoryEpoch || '') === (pill.inventoryEpoch || '');
+
+    if (deducted > 0 && quantity !== null && sameInventoryBaseline) {
+      const restored = Number((quantity + deducted).toFixed(6));
+
+      if (!Number.isFinite(restored)) {
+        toast('Could not restore supply. Check the recorded quantity.');
+        return;
+      }
+
+      nextPill.quantity = restored;
+      inventoryChanged = true;
+    } else if (deducted > 0) {
+      warning =
+        ' Supply was not restored because its recorded baseline changed.';
+    }
+
+    nextDose.inventoryDeducted = 0;
+    delete nextDose.inventoryEpoch;
+  }
+
+  nextDose.status = status;
+  nextDose.takenAt = status === 'taken' ? localISO() : '';
+
+  const nextPills = pills.map(item =>
+    item.id === pill.id ? nextPill : item
+  );
+
+  const nextDoses = doses.map(item =>
+    item.id === dose.id ? nextDose : item
+  );
+
+  let previousPills;
+  let previousDoses;
+
+  try {
+    previousPills = localStorage.getItem(KEYS.pills);
+    previousDoses = localStorage.getItem(KEYS.doses);
+
+    if (inventoryChanged) {
+      localStorage.setItem(KEYS.pills, JSON.stringify(nextPills));
+    }
+
+    localStorage.setItem(KEYS.doses, JSON.stringify(nextDoses));
+  } catch (error) {
+    try {
+      if (previousPills !== undefined && inventoryChanged) {
+        if (previousPills === null) {
+          localStorage.removeItem(KEYS.pills);
+        } else {
+          localStorage.setItem(KEYS.pills, previousPills);
+        }
+      }
+
+      if (previousDoses !== undefined) {
+        if (previousDoses === null) {
+          localStorage.removeItem(KEYS.doses);
+        } else {
+          localStorage.setItem(KEYS.doses, previousDoses);
+        }
+      }
+    } catch (rollbackError) {
+      console.error('Inventory rollback failed:', rollbackError);
+    }
+
+    console.error('Dose update failed:', error);
+    toast('Could not save the dose update. Check device storage.');
+    return;
+  }
+
+  pills = nextPills;
+  doses = nextDoses;
+
+  renderToday();
+
+  if (currentPage === 'pills') {
+    renderPills();
+  }
+
+  const message =
+    status === 'taken'
+      ? 'Dose marked as taken.'
+      : status === 'skipped'
+        ? 'Dose skipped.'
+        : 'Dose updated.';
+
+  toast(message + warning);
+}
   function todayDoses() { ensureDoseRecords(); const key = dateKey(); return doses.filter(d => String(d.scheduledAt).slice(0, 10) === key).map(d => ({ ...d, pill: pills.find(p => p.id === d.pillId) })).filter(d => d.pill).sort((a, b) => getDoseTime(a) - getDoseTime(b)); }
   function renderToday() {
     const list = $('#today-dose-list'); const all = todayDoses(); const active = pills.filter(p => p.active).length; const completed = all.filter(d => d.status === 'taken').length; const remaining = all.filter(d => !['taken', 'skipped'].includes(d.status)).length; const pct = all.length ? Math.round(completed / all.length * 100) : 0; $('#greeting').textContent = new Date().getHours() < 12 ? 'YOUR MORNING CHECK-IN' : new Date().getHours() < 17 ? 'YOUR AFTERNOON CHECK-IN' : 'YOUR EVENING CHECK-IN'; $('#today-date').textContent = fmtDate(new Date()); $('#date-day').textContent = String(new Date().getDate()).padStart(2, '0'); $('#date-month').textContent = new Intl.DateTimeFormat(undefined, { month: 'short' }).format(new Date()).toUpperCase(); $('#progress-title').textContent = all.length ? (completed === all.length ? 'All caught up' : `${completed} of ${all.length} taken`) : 'Your day, at a glance'; $('#progress-copy').textContent = !all.length ? 'Your schedule will appear here.' : completed === all.length ? 'All scheduled doses are complete.' : `${remaining} dose${remaining === 1 ? '' : 's'} remaining today.`; $('#progress-percent').textContent = `${pct}%`; $('#progress-ring').style.background = `conic-gradient(#d6f2df ${pct * 3.6}deg,rgba(255,255,255,.2) ${pct * 3.6}deg)`; $('#progress-ring').setAttribute('aria-label', `${pct}% of scheduled doses taken`); $('#progress-bar').style.width = `${pct}%`; $('#stat-scheduled').textContent = all.length; $('#stat-taken').textContent = completed; $('#stat-remaining').textContent = remaining;
@@ -76,20 +225,903 @@
     else list.innerHTML = all.map(d => { const p = d.pill, s = doseStatus(d), taken = s === 'taken', final = ['taken', 'skipped'].includes(s); return `<article class="dose-card ${highlightPillId === p.id ? 'dose-highlight' : ''}" style="--pill-color:${esc(p.color || COLORS[0])}" id="dose-${esc(d.id)}"><div class="dose-time">${esc(fmtTime(String(d.scheduledAt).slice(11, 16)))}</div><div class="dose-rail"></div><div class="dose-main"><h3>${esc(p.name)}</h3><p>${esc(p.dosage || p.form || 'Medication')}${p.notes ? ` · ${esc(p.notes)}` : ''}</p><span class="dose-status ${esc(s)}">${esc(doseLabel(s))}${taken && d.takenAt ? ` · ${esc(fmtTime(d.takenAt.slice(11, 16)))}` : ''}</span></div><div class="dose-actions">${taken ? `<button class="take-button done" data-dose-action="undo" data-id="${esc(d.id)}">Undo</button>` : final ? `<button class="take-button done" data-dose-action="undo" data-id="${esc(d.id)}">Undo</button>` : `<button class="take-button" data-dose-action="taken" data-id="${esc(d.id)}">Mark taken</button><button class="mini-action" data-dose-action="skipped" data-id="${esc(d.id)}">Skip</button>`}</div></article>`; }).join(''); list.querySelectorAll('[data-dose-action]').forEach(btn => btn.onclick = () => { const status = btn.dataset.doseAction; updateDose(btn.dataset.id, status === 'undo' ? 'pending' : status); }); const next = all.find(d => !['taken', 'skipped'].includes(doseStatus(d))); $('#daily-insight').textContent = !pills.length ? 'Add a medication to build your daily schedule.' : !all.length ? 'You have no scheduled doses today. Your medication list is available any time.' : !next ? 'You completed all scheduled doses for today.' : `Your next dose is ${next.pill.name} at ${fmtTime(String(next.scheduledAt).slice(11, 16))}.`; highlightPillId = null;
   }
   function scheduleSummary(p) { if (p.schedule === 'asNeeded') return 'As needed · no automatic reminders'; const days = p.schedule === 'daily' ? 'Every day' : p.schedule === 'weekdays' ? 'Weekdays' : (p.days || []).sort((a, b) => a - b).map(d => DAYS[d]).join(', ') || 'No days selected'; return `${days}${(p.times || []).length ? ' at ' + p.times.map(fmtTime).join(' and ') : ''}`; }
-  function renderPills() { const filter = $('#pill-filter').value, query = $('#pill-search').value.trim().toLowerCase(); const visible = pills.filter(p => (filter === 'all' || (filter === 'active' ? p.active : !p.active)) && `${p.name} ${p.dosage || ''}`.toLowerCase().includes(query)); $('#pill-count').textContent = `${pills.filter(p => p.active).length} active medication${pills.filter(p => p.active).length === 1 ? '' : 's'}`; const list = $('#pill-list'); if (!visible.length) { list.innerHTML = `<div class="empty-state"><div class="empty-icon">✚</div><h3>${pills.length ? 'No matching medications' : 'Your list starts here'}</h3><p>${pills.length ? 'Try another search or filter.' : 'Add your first medication to keep its dose and reminder schedule organized.'}</p><button class="primary-button" id="pill-empty-add">Add medication</button></div>`; $('#pill-empty-add').onclick = () => openPillModal(); return; } list.innerHTML = visible.map(p => `<article class="med-card" style="--pill-color:${esc(p.color || COLORS[0])}"><div class="med-card-top"><div class="med-dot">${p.form === 'Capsule' ? '◒' : p.form === 'Liquid' ? '◉' : p.form === 'Injection' ? '↗' : '＋'}</div><div class="med-info"><h3>${esc(p.name)}</h3><p>${esc([p.dosage, p.form].filter(Boolean).join(' · ') || 'Medication')}</p></div><button class="med-menu" aria-label="More actions for ${esc(p.name)}" data-med-menu="${esc(p.id)}">⋯</button></div><div class="med-details"><div class="med-detail">◷ <span>${esc(scheduleSummary(p))}</span></div>${p.startDate ? `<div class="med-detail">▦ <span>Started ${esc(fmtDate(parseLocal(p.startDate + 'T12:00:00'), { month: 'short', day: 'numeric', year: 'numeric' }))}${p.endDate ? ' · Ends ' + esc(p.endDate) : ''}</span></div>` : ''}${p.quantity !== '' && p.quantity != null ? `<div class="med-detail">▤ <span><b>${esc(p.quantity)}</b> remaining</span></div>` : ''}${p.notes ? `<div class="med-detail">✎ <span>${esc(p.notes)}</span></div>` : ''}</div><div class="med-bottom"><span class="pill-state ${p.active ? '' : 'paused'}">${p.active ? 'Active' : 'Reminders paused'}</span><div class="med-actions"><button data-edit-pill="${esc(p.id)}">Edit</button><button data-toggle-pill="${esc(p.id)}">${p.active ? 'Pause' : 'Resume'}</button></div></div></article>`).join(''); list.querySelectorAll('[data-edit-pill]').forEach(b => b.onclick = () => openPillModal(b.dataset.editPill)); list.querySelectorAll('[data-toggle-pill]').forEach(b => b.onclick = () => togglePill(b.dataset.togglePill)); list.querySelectorAll('[data-med-menu]').forEach(b => b.onclick = () => showPillActions(b.dataset.medMenu)); }
+  function renderPills() { const filter = $('#pill-filter').value, query = $('#pill-search').value.trim().toLowerCase(); const visible = pills.filter(p => (filter === 'all' || (filter === 'active' ? p.active : !p.active)) && `${p.name} ${p.dosage || ''}`.toLowerCase().includes(query)); $('#pill-count').textContent = `${pills.filter(p => p.active).length} active medication${pills.filter(p => p.active).length === 1 ? '' : 's'}`; const list = $('#pill-list'); if (!visible.length) { list.innerHTML = `<div class="empty-state"><div class="empty-icon">✚</div><h3>${pills.length ? 'No matching medications' : 'Your list starts here'}</h3><p>${pills.length ? 'Try another search or filter.' : 'Add your first medication to keep its dose and reminder schedule organized.'}</p><button class="primary-button" id="pill-empty-add">Add medication</button></div>`; $('#pill-empty-add').onclick = () => openPillModal(); return; } list.innerHTML = visible.map(p => `<article class="med-card" style="--pill-color:${esc(p.color || COLORS[0])}"><div class="med-card-top"><div class="med-dot">${p.form === 'Capsule' ? '◒' : p.form === 'Liquid' ? '◉' : p.form === 'Injection' ? '↗' : '＋'}</div><div class="med-info"><h3>${esc(p.name)}</h3><p>${esc([p.dosage, p.form].filter(Boolean).join(' · ') || 'Medication')}</p></div><button class="med-menu" aria-label="More actions for ${esc(p.name)}" data-med-menu="${esc(p.id)}">⋯</button></div><div class="med-details"><div class="med-detail">◷ <span>${esc(scheduleSummary(p))}</span></div>${p.startDate ? `<div class="med-detail">▦ <span>Started ${esc(fmtDate(parseLocal(p.startDate + 'T12:00:00'), { month: 'short', day: 'numeric', year: 'numeric' }))}${p.endDate ? ' · Ends ' + esc(p.endDate) : ''}</span></div>` : ''}${p.quantity !== '' && p.quantity != null ? `
+  <div class="med-detail">
+    ▤
+    <span>
+      <b>${esc(p.quantity)}</b>
+      ${esc(medicationQuantityUnit(p.form))} remaining
+    </span>
+  </div>
+
+  ${p.unitsPerDose !== '' && p.unitsPerDose != null ? `
+    <div class="med-detail">
+      💊
+      <span>
+        ${esc(p.unitsPerDose)}
+        ${esc(medicationQuantityUnit(p.form))} per dose
+      </span>
+    </div>
+  ` : ''}
+
+  ${p.refillThreshold !== '' && p.refillThreshold != null ? `
+    <div class="med-detail">
+      ↻
+      <span>
+        Low-supply threshold:
+        ${esc(p.refillThreshold)}
+        ${esc(medicationQuantityUnit(p.form))}
+      </span>
+    </div>
+  ` : ''}
+` : ''}${p.notes ? `<div class="med-detail">✎ <span>${esc(p.notes)}</span></div>` : ''}</div><div class="med-bottom"><span class="pill-state ${p.active ? '' : 'paused'}">${p.active ? 'Active' : 'Reminders paused'}</span><div class="med-actions"><button data-edit-pill="${esc(p.id)}">Edit</button><button data-toggle-pill="${esc(p.id)}">${p.active ? 'Pause' : 'Resume'}</button></div></div></article>`).join(''); list.querySelectorAll('[data-edit-pill]').forEach(b => b.onclick = () => openPillModal(b.dataset.editPill)); list.querySelectorAll('[data-toggle-pill]').forEach(b => b.onclick = () => togglePill(b.dataset.togglePill)); list.querySelectorAll('[data-med-menu]').forEach(b => b.onclick = () => showPillActions(b.dataset.medMenu)); }
   function showPillActions(id) { const p = pills.find(x => x.id === id); if (!p) return; openModal(`<div class="modal-head"><h2>${esc(p.name)}</h2><button class="close-modal" data-close aria-label="Close">×</button></div><p class="modal-intro">Medication options</p><div class="settings-actions vertical"><button class="settings-link" id="action-edit"><span><strong>Edit medication</strong><small>Update dose, schedule or notes</small></span><b>›</b></button><button class="settings-link" id="action-toggle"><span><strong>${p.active ? 'Pause reminders' : 'Resume reminders'}</strong><small>Keep the medication record</small></span><b>›</b></button><button class="settings-link" id="action-history"><span><strong>View history</strong><small>Review logged doses</small></span><b>›</b></button><button class="settings-link danger-link" id="action-delete"><span><strong>Delete medication</strong><small>Remove this medication and its history</small></span><b>×</b></button></div>`); $('#action-edit').onclick = () => { closeModal(); openPillModal(id) }; $('#action-toggle').onclick = () => { closeModal(); togglePill(id) }; $('#action-history').onclick = () => { closeModal(); go('today'); toast(`Dose history is shown in today's schedule; ${doses.filter(d => d.pillId === id).length} record(s) stored.`) }; $('#action-delete').onclick = () => { closeModal(); confirmAction('Delete medication?', `This removes ${p.name} and its dose history from this device.`, () => deletePill(id)); }; }
-  function togglePill(id) { const p = pills.find(x => x.id === id); if (!p) return; p.active = !p.active; save(KEYS.pills, pills); if (!p.active) { HealthLedgerNotifications.cancelPill(p).then(() => { }); toast('Reminders paused.'); } else { HealthLedgerNotifications.schedulePill(p).then(r => toast(r.supported && r.scheduled ? `Reminders resumed (${r.scheduled} scheduled).` : 'Medication resumed. Browser preview does not deliver native reminders.')); } ensureDoseRecords(); render(); }
+  function showPillActions(id) {
+  const p = pills.find(item => item.id === id);
+  if (!p) return;
+
+  openModal(`
+    <div class="modal-head">
+      <h2 id="modal-title">${esc(p.name)}</h2>
+      <button
+        class="close-modal"
+        data-close
+        aria-label="Close"
+      >×</button>
+    </div>
+
+    <p class="modal-intro">Medication options</p>
+
+    <div class="settings-actions vertical">
+      <button class="settings-link" id="action-edit">
+        <span>
+          <strong>Edit medication</strong>
+          <small>Update dose, schedule or notes</small>
+        </span>
+        <b aria-hidden="true">›</b>
+      </button>
+
+      <button class="settings-link" id="action-toggle">
+        <span>
+          <strong>
+            ${p.active ? 'Pause reminders' : 'Resume reminders'}
+          </strong>
+          <small>Keep the medication record</small>
+        </span>
+        <b aria-hidden="true">›</b>
+      </button>
+
+      <button class="settings-link" id="action-about">
+        <span>
+          <strong>About medication</strong>
+          <small>Information about your medication</small>
+        </span>
+        <b aria-hidden="true">›</b>
+      </button>
+
+      <button class="settings-link" id="action-history">
+        <span>
+          <strong>View history</strong>
+          <small>Review the last 30 days</small>
+        </span>
+        <b aria-hidden="true">›</b>
+      </button>
+
+      <button
+        class="settings-link danger-link"
+        id="action-delete"
+      >
+        <span>
+          <strong>Delete medication</strong>
+          <small>Remove this medication and its history</small>
+        </span>
+        <b aria-hidden="true">×</b>
+      </button>
+    </div>
+  `);
+
+  $('#action-edit').onclick = () => {
+    closeModal();
+    openPillModal(id);
+  };
+
+  $('#action-toggle').onclick = () => {
+    closeModal();
+    togglePill(id);
+  };
+
+  $('#action-about').onclick = () => openMedicationAbout(id);
+
+  $('#action-history').onclick = () => {
+    openMedicationHistory(id);
+  };
+
+  $('#action-delete').onclick = () => {
+    closeModal();
+
+    confirmAction(
+      'Delete medication?',
+      `This removes ${p.name} and its dose history from this device.`,
+      () => deletePill(id)
+    );
+  };
+}
+
+function saveMedicationInfo(id, information) {
+  const index = pills.findIndex(pill => pill.id === id);
+  if (index === -1) return false;
+
+  const updatedPills = pills.map(pill =>
+    pill.id === id
+      ? { ...pill, medicationInfo: information }
+      : pill
+  );
+
+  try {
+    localStorage.setItem(KEYS.pills, JSON.stringify(updatedPills));
+  } catch (error) {
+    console.error('Could not save medication information:', error);
+    toast('Could not save medication information. Check device storage.');
+    return false;
+  }
+
+  pills = updatedPills;
+  return true;
+}
+
+function openMedicationAbout(id) {
+  const pill = pills.find(item => item.id === id);
+  if (!pill) return;
+
+  openModal(`
+    <div class="modal-head">
+      <h2 id="modal-title">About ${esc(pill.name)}</h2>
+      <button
+        class="close-modal"
+        data-close
+        aria-label="Close"
+      >×</button>
+    </div>
+
+    <p class="modal-intro">
+      Medication labeling from openFDA.
+    </p>
+
+    <p class="medication-information-note">
+      Loading information sends this medication’s name to the
+      FDA’s data service. It does not send your dose history,
+      glucose readings, notes, or remaining quantity.
+      Internet access is required.
+    </p>
+
+    <div id="medication-info-content">
+      <button
+        type="button"
+        class="primary-button"
+        id="load-medication-information"
+      >
+        Load medication information
+      </button>
+    </div>
+
+    <p class="medication-information-note">
+      Search results are not verified matches to your medication.
+      Check the product name, strength, formulation, and manufacturer.
+      Do not use this information to make treatment decisions.
+    </p>
+
+    <div class="modal-actions">
+      <button
+        type="button"
+        class="secondary-button"
+        id="medication-about-back"
+      >
+        Back to medication options
+      </button>
+    </div>
+  `);
+
+  const content = $('#medication-info-content');
+  const loadButton = $('#load-medication-information');
+  let controller = null;
+
+  $('#medication-about-back').onclick = () => {
+    controller?.abort();
+    showPillActions(id);
+  };
+
+  function showMessage(message) {
+  content.innerHTML = `
+    <p class="medication-information-note" role="status">
+      ${esc(message)}
+    </p>
+
+    <button
+      type="button"
+      class="secondary-button"
+      id="retry-medication-information"
+    >
+      Try again
+    </button>
+  `;
+
+  content.querySelector('#retry-medication-information')
+    .onclick = loadInformation;
+}
+
+  function fieldValues(record, field) {
+    const value = record.openfda?.[field];
+
+    return Array.isArray(value)
+      ? value.map(String).filter(Boolean).join(', ')
+      : '';
+  }
+
+  function showLabel(record, results = [], savedAt = '') {
+  if (!content.isConnected) return;
+
+  const savedDate = savedAt ? new Date(savedAt) : null;
+
+  const savedDateLabel =
+    savedDate && Number.isFinite(savedDate.getTime())
+      ? savedDate.toLocaleString()
+      : '';
+
+  const brand = fieldValues(record, 'brand_name');
+    const generic = fieldValues(record, 'generic_name');
+    const manufacturer = fieldValues(record, 'manufacturer_name');
+    const route = fieldValues(record, 'route');
+    const productType = fieldValues(record, 'product_type');
+
+    const labelDate = /^\d{8}$/.test(record.effective_time || '')
+      ? `${record.effective_time.slice(0, 4)}-${record.effective_time.slice(4, 6)}-${record.effective_time.slice(6, 8)}`
+      : 'Not provided';
+
+    const sections = [
+      ['Boxed warning', 'boxed_warning'],
+      ['Uses', 'indications_and_usage'],
+      ['OTC uses', 'purpose'],
+      ['Warnings', 'warnings'],
+      ['Warnings and precautions', 'warnings_and_cautions'],
+      ['Do not use', 'do_not_use'],
+      ['Contraindications', 'contraindications'],
+      ['Side effects', 'adverse_reactions'],
+      ['Drug interactions', 'drug_interactions'],
+      ['Patient information', 'information_for_patients'],
+      ['Storage', 'storage_and_handling'],
+    ];
+
+    const sectionHtml = sections.map(([title, field]) => {
+      const values = record[field];
+
+      if (!Array.isArray(values) || !values.length) return '';
+
+      const text = values
+        .filter(value => typeof value === 'string')
+        .join('\n\n');
+
+      if (!text.trim()) return '';
+
+      return `
+        <details class="medication-label-section">
+          <summary>${esc(title)}</summary>
+          <div class="medication-label-text">${esc(text)}</div>
+        </details>
+      `;
+    }).join('');
+
+    content.innerHTML = `
+      <div class="medication-label-identity">
+        <p><strong>Brand:</strong> ${esc(brand || 'Not provided')}</p>
+        <p><strong>Generic:</strong> ${esc(generic || 'Not provided')}</p>
+        <p>
+          <strong>Manufacturer:</strong>
+          ${esc(manufacturer || 'Not provided')}
+        </p>
+        <p><strong>Route:</strong> ${esc(route || 'Not provided')}</p>
+        <p>
+          <strong>Product type:</strong>
+          ${esc(productType || 'Not provided')}
+        </p>
+        <p><strong>Label effective date:</strong> ${esc(labelDate)}</p>
+      </div>
+
+      <p class="medication-information-note">
+        Source: openFDA drug product labeling.
+        These are selected sections, not the complete label.
+        Missing sections do not mean there are no warnings or interactions.
+        Label information may differ from your product’s current packaging.
+      </p>
+
+      ${sectionHtml || `
+        <p class="medication-information-note">
+          No supported text sections were returned for this label.
+        </p>
+      `}
+
+      <p class="medication-information-note">
+        ${savedDateLabel
+          ? `Saved on this device: ${esc(savedDateLabel)}.
+             This is a saved copy and is not automatically refreshed.`
+          : 'You can save this label for this medication. Saving does not verify that it matches your product.'}
+      </p>
+
+      <div class="medication-info-actions">
+        <button
+          type="button"
+          class="primary-button"
+          id="save-selected-medication-info"
+          ${savedAt ? 'disabled' : ''}
+        >
+          ${savedAt
+            ? 'Information saved'
+            : 'Save this medication information'}
+        </button>
+
+        <button
+          type="button"
+          class="secondary-button"
+          id="choose-another-medication-label"
+        >
+          Choose different information
+        </button>
+
+        ${savedAt ? `
+          <button
+            type="button"
+            class="secondary-button"
+            id="remove-saved-medication-info"
+          >
+            Remove saved information
+          </button>
+        ` : ''}
+      </div>
+    `;
+
+    content.querySelector('#save-selected-medication-info')
+  .onclick = () => {
+    const currentPill = pills.find(item => item.id === id);
+    if (!currentPill) return;
+
+    const information = {
+      source: 'openFDA',
+      savedAt: new Date().toISOString(),
+      medicationName: currentPill.name,
+      record,
+    };
+
+    if (!saveMedicationInfo(id, information)) return;
+
+    toast('Medication information saved.');
+    showLabel(record, results, information.savedAt);
+  };
+
+content.querySelector('#choose-another-medication-label')
+  .onclick = () => {
+    if (results.length) {
+      showResults(results);
+    } else {
+      loadInformation();
+    }
+  };
+
+const removeButton =
+  content.querySelector('#remove-saved-medication-info');
+
+if (removeButton) {
+  removeButton.onclick = () => {
+    confirmAction(
+      'Remove saved information?',
+      'This removes the saved label only. Your medication, supply, and dose history will remain.',
+      () => {
+        if (saveMedicationInfo(id, null)) {
+          toast('Saved medication information removed.');
+        }
+
+        openMedicationAbout(id);
+      }
+    );
+  };
+}
+  }
+
+  function showResults(results, total = results.length) {
+    if (!content.isConnected) return;
+
+    content.innerHTML = `
+      <p class="medication-information-note">
+        Choose a label that matches your medication.
+        Showing ${results.length} of ${esc(total)} matching records.
+        A name match alone does not confirm the correct product.
+      </p>
+
+      <div class="settings-card settings-actions vertical">
+        ${results.map((record, index) => {
+          const brand = fieldValues(record, 'brand_name');
+          const generic = fieldValues(record, 'generic_name');
+          const manufacturer = fieldValues(record, 'manufacturer_name');
+          const route = fieldValues(record, 'route');
+
+          return `
+            <button
+              type="button"
+              class="settings-link"
+              data-medication-label="${index}"
+            >
+              <span>
+                <strong>
+                  ${esc(brand || generic || 'Medication label')}
+                </strong>
+                <small>
+                  ${esc(
+                    [generic, manufacturer, route]
+                      .filter(Boolean)
+                      .join(' · ') || 'Product details not provided'
+                  )}
+                </small>
+              </span>
+              <b aria-hidden="true">›</b>
+            </button>
+          `;
+        }).join('')}
+      </div>
+    `;
+
+    content.querySelectorAll('[data-medication-label]')
+      .forEach(button => {
+        button.onclick = () => {
+          const record = results[Number(button.dataset.medicationLabel)];
+          if (record) showLabel(record, results);
+        };
+      });
+  }
+
+  async function loadInformation() {
+    if (!content.isConnected) return;
+
+    controller?.abort();
+    controller = new AbortController();
+
+    const requestController = controller;
+
+    content.innerHTML = `
+      <p class="medication-information-note" role="status">
+        Loading medication labels…
+      </p>
+    `;
+
+    const name = pill.name.trim();
+
+    if (!name) {
+      showMessage('This medication does not have a searchable name.');
+      return;
+    }
+
+    const safeName = name
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"');
+
+    const query =
+      `openfda.brand_name:"${safeName}" OR ` +
+      `openfda.generic_name:"${safeName}"`;
+
+    const params = new URLSearchParams({
+      search: query,
+      limit: '10',
+    });
+
+    const timeout = setTimeout(() => {
+      requestController.abort();
+    }, 15000);
+
+    try {
+      const response = await fetch(
+        `https://api.fda.gov/drug/label.json?${params}`,
+        {
+          signal: requestController.signal,
+          credentials: 'omit',
+          referrerPolicy: 'no-referrer',
+        }
+      );
+
+      if (!content.isConnected || controller !== requestController) return;
+
+      if (response.status === 404) {
+        showMessage(
+          'No matching labels were found. Check the medication name. ' +
+          'Some medications and supplements may not appear in this database.'
+        );
+        return;
+      }
+
+      if (response.status === 429) {
+        showMessage(
+          'The medication information service is busy. Try again later.'
+        );
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error(`Information service returned ${response.status}.`);
+      }
+
+      const data = await response.json();
+
+      if (!content.isConnected || controller !== requestController) return;
+
+      const results = Array.isArray(data.results) ? data.results : [];
+
+      if (!results.length) {
+        showMessage('No matching medication labels were returned.');
+        return;
+      }
+
+      showResults(
+        results,
+        data.meta?.results?.total ?? results.length
+      );
+    } catch (error) {
+      if (!content.isConnected || controller !== requestController) return;
+
+      showMessage(
+        error.name === 'AbortError'
+          ? 'The request timed out. Try again.'
+          : 'Could not load medication information. Check your connection ' +
+            'or try again later.'
+      );
+
+      console.error('Medication information request failed:', error);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  loadButton.onclick = loadInformation;
+
+const savedInformation = pill.medicationInfo;
+
+if (
+  savedInformation?.source === 'openFDA' &&
+  savedInformation.record &&
+  savedInformation.medicationName === pill.name
+) {
+  showLabel(
+    savedInformation.record,
+    [],
+    savedInformation.savedAt
+  );
+}
+}
+
+function openMedicationHistory(id) {
+  const p = pills.find(item => item.id === id);
+  if (!p) return;
+
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+
+  const firstDay = new Date(today);
+  firstDay.setDate(firstDay.getDate() - 29);
+
+  const firstKey = dateKey(firstDay);
+  const lastKey = dateKey(today);
+
+  const records = doses
+    .filter(dose => {
+      const key = String(dose.scheduledAt).slice(0, 10);
+
+      return (
+        dose.pillId === id &&
+        key >= firstKey &&
+        key <= lastKey
+      );
+    })
+    .filter(dose => {
+      return Number.isFinite(getDoseTime(dose).getTime());
+    })
+    .sort((a, b) => getDoseTime(b) - getDoseTime(a));
+
+  const counts = {
+    taken: 0,
+    missed: 0,
+    skipped: 0,
+    pending: 0,
+  };
+
+  const grouped = new Map();
+
+  for (const dose of records) {
+    const key = String(dose.scheduledAt).slice(0, 10);
+    const status = doseStatus(dose);
+
+    if (status === 'taken') {
+      counts.taken += 1;
+    } else if (status === 'missed') {
+      counts.missed += 1;
+    } else if (status === 'skipped') {
+      counts.skipped += 1;
+    } else {
+      counts.pending += 1;
+    }
+
+    if (!grouped.has(key)) {
+      grouped.set(key, []);
+    }
+
+    grouped.get(key).push({ dose, status });
+  }
+
+  const daySections = [];
+
+  for (let offset = 0; offset < 30; offset += 1) {
+    const date = new Date(today);
+    date.setDate(today.getDate() - offset);
+
+    const key = dateKey(date);
+    const dayRecords = grouped.get(key) || [];
+
+    const rows = dayRecords.length
+      ? dayRecords.map(({ dose, status }) => {
+          const label =
+            status === 'upcoming'
+              ? 'Upcoming'
+              : doseLabel(status);
+
+          const takenTime = dose.takenAt
+            ? parseLocal(dose.takenAt)
+            : null;
+
+          const takenDetail =
+            status === 'taken' &&
+            takenTime &&
+            Number.isFinite(takenTime.getTime())
+              ? `
+                  <small>
+                    Taken ${esc(fmtStamp(dose.takenAt))}
+                  </small>
+                `
+              : '';
+
+          return `
+            <div class="medication-dose-history-row">
+              <div class="medication-dose-history-time">
+                <strong>
+                  ${esc(fmtTime(
+                    String(dose.scheduledAt).slice(11, 16)
+                  ))}
+                </strong>
+
+                ${takenDetail}
+              </div>
+
+              <span class="dose-status ${esc(status)}">
+                ${esc(label)}
+              </span>
+            </div>
+          `;
+        }).join('')
+      : `
+          <p class="medication-history-empty">
+            No stored dose records.
+          </p>
+        `;
+
+    daySections.push(`
+      <section class="medication-history-day">
+        <h3>
+          ${esc(fmtDate(date, {
+            weekday: 'short',
+            month: 'short',
+            day: 'numeric',
+          }))}
+          ${key === lastKey ? ' · Today' : ''}
+        </h3>
+
+        ${rows}
+      </section>
+    `);
+  }
+
+  openModal(`
+    <div class="modal-head">
+      <h2 id="modal-title">${esc(p.name)} history</h2>
+      <button
+        class="close-modal"
+        data-close
+        aria-label="Close"
+      >×</button>
+    </div>
+
+    <p class="modal-intro">
+      Last 30 days ·
+      ${esc(fmtDate(firstDay, {
+        month: 'short',
+        day: 'numeric',
+      }))}
+      –
+      ${esc(fmtDate(today, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      }))}
+    </p>
+
+    <div class="medication-history-summary">
+      <div>
+        <strong>${counts.taken}</strong>
+        <span>Taken</span>
+      </div>
+
+      <div>
+        <strong>${counts.missed}</strong>
+        <span>Missed</span>
+      </div>
+
+      <div>
+        <strong>${counts.skipped}</strong>
+        <span>Skipped</span>
+      </div>
+
+      <div>
+        <strong>${counts.pending}</strong>
+        <span>Pending</span>
+      </div>
+    </div>
+
+    <p class="medication-information-note">
+      Only stored dose records are shown. Missing records are not
+      counted as missed doses. “Missed” follows the app’s existing
+      overdue-dose rule.
+    </p>
+
+    <div class="medication-history-days">
+      ${daySections.join('')}
+    </div>
+
+    <div class="modal-actions history-modal-actions">
+      <button
+        type="button"
+        class="secondary-button"
+        id="medication-history-back"
+      >
+        Back to medication options
+      </button>
+    </div>
+  `);
+
+  $('#medication-history-back').onclick = () => {
+    showPillActions(id);
+  };
+}
   function deletePill(id) { const p = pills.find(x => x.id === id); if (!p) return; HealthLedgerNotifications.cancelPill(p).then(() => { }); pills = pills.filter(x => x.id !== id); doses = doses.filter(d => d.pillId !== id); save(KEYS.pills, pills); save(KEYS.doses, doses); render(); toast('Medication deleted.'); }
   function openModal(html) { const root = $('#modal-root'); root.innerHTML = `<div class="modal-backdrop" role="presentation"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">${html}</section></div>`; const backdrop = root.querySelector('.modal-backdrop'); backdrop.addEventListener('click', e => { if (e.target === backdrop) closeModal(); }); root.querySelectorAll('[data-close]').forEach(b => b.onclick = closeModal); const first = root.querySelector('input,button,select,textarea'); if (first) setTimeout(() => first.focus(), 20); document.addEventListener('keydown', escModal, { once: true }); }
   function escModal(e) { if (e.key === 'Escape') { closeModal(); return; } document.addEventListener('keydown', escModal, { once: true }); }
   function closeModal() { $('#modal-root').innerHTML = ''; }
-  function confirmAction(title, body, onConfirm, danger = true) { openModal(`<div class="modal-head"><h2 id="modal-title">${esc(title)}</h2><button class="close-modal" data-close aria-label="Close">×</button></div><p class="modal-intro">${esc(body)}</p><div class="modal-actions"><button class="secondary-button" data-close>Cancel</button><button class="primary-button ${danger ? 'danger-button' : ''}" id="confirm-action">Confirm</button></div>`); $('#confirm-action').onclick = () => { closeModal(); onConfirm(); }; }
+  function confirmAction(title, body, onConfirm, danger = true) { openModal(`<div class="modal-head"><h2 id="modal-title">${esc(title)}</h2><button class="close-modal" data-close aria-label="Close">×</button></div><p class="modal-intro">${esc(body)}</p><div class="modal-actions"><button class="secondary-button" data-close>Cancel</button><button class="primary-button ${danger ? 'danger-button' : ''}" id="confirm-action">Confirm</button></div>`); $('#confirm-action').onclick = () => { closeModal(); onConfirm(); }; } function medicationQuantityUnit(form) {
+  switch (String(form).toLowerCase()) {
+    case 'tablet':
+      return 'tablets';
+    case 'capsule':
+      return 'capsules';
+    case 'liquid':
+      return 'mL';
+    default:
+      return 'units';
+  }
+}
   function openPillModal(id = null) {
-    const old = pills.find(p => p.id === id); const p = old || { name: '', dosage: '', form: 'Tablet', color: COLORS[0], times: ['08:00'], schedule: 'daily', days: [1, 2, 3, 4, 5, 6, 0], startDate: dateKey(), endDate: '', notes: '', active: true, quantity: '' }; const colorButtons = COLORS.map(c => `<button type="button" class="swatch ${c === p.color ? 'selected' : ''}" style="--swatch:${c}" data-color="${c}" aria-label="Choose color ${c}" aria-pressed="${c === p.color}"></button>`).join(''); openModal(`<div class="modal-head"><h2 id="modal-title">${old ? 'Edit medication' : 'Add medication'}</h2><button class="close-modal" data-close aria-label="Close">×</button></div><p class="modal-intro">${old ? 'Keep your medication details up to date.' : 'Build a routine that works for you.'}</p><form id="pill-form" class="modal-form" novalidate><label class="field"><span>Medication name <b>*</b></span><input id="med-name" maxlength="100" required placeholder="e.g., Metformin" value="${esc(p.name)}"><small class="error-text" id="med-name-error"></small></label><div class="modal-grid"><label class="field"><span>Dosage</span><input id="med-dosage" maxlength="60" placeholder="e.g., 500 mg" value="${esc(p.dosage || '')}"></label><label class="field"><span>Form</span><select id="med-form">${FORMS.map(f => `<option ${f.toLowerCase() === String(p.form).toLowerCase() ? 'selected' : ''}>${f}</option>`).join('')}</select></label></div><div class="field"><span>Color marker</span><div class="swatches">${colorButtons}</div><input id="med-color" type="hidden" value="${esc(p.color)}"></div><div class="field"><span>Reminder times</span><div class="time-list" id="time-list">${(p.times || []).map((t, i) => `<div class="time-row"><input aria-label="Reminder time ${i + 1}" type="time" value="${esc(t)}" class="med-time"><button type="button" class="remove-time" aria-label="Remove reminder time">−</button></div>`).join('')}</div><button type="button" class="inline-button" id="add-time">＋ Add another reminder time</button></div><label class="field"><span>Frequency</span><select id="med-schedule">${SCHEDULES.map(s => `<option value="${s.value}" ${s.value === p.schedule ? 'selected' : ''}>${s.label}</option>`).join('')}</select></label><div class="field" id="days-field" ${p.schedule === 'custom' ? '' : 'hidden'}><span>Repeat on</span><div class="days-picker">${DAYS.map((d, i) => `<button type="button" class="day-toggle ${(p.days || []).includes(i) ? 'selected' : ''}" data-day="${i}" aria-pressed="${(p.days || []).includes(i)}">${d}</button>`).join('')}</div><small class="error-text" id="days-error"></small></div><div class="modal-grid"><label class="field"><span>Start date</span><input id="med-start" type="date" value="${esc(p.startDate || dateKey())}"></label><label class="field"><span>End date <small>Optional</small></span><input id="med-end" type="date" value="${esc(p.endDate || '')}"></label></div><label class="field"><span>Remaining quantity <small>Optional</small></span><input id="med-quantity" type="number" min="0" step="1" placeholder="e.g., 30" value="${esc(p.quantity ?? '')}"></label><label class="field"><span>Notes <small>Optional</small></span><textarea id="med-notes" rows="2" maxlength="500" placeholder="Take with food">${esc(p.notes || '')}</textarea></label><label class="check-row"><input id="med-active" type="checkbox" ${p.active ? 'checked' : ''}> Medication is active and reminders are enabled</label><p class="modal-note">Health Ledger organizes the schedule you enter. Follow your clinician’s instructions for medication use.</p><div class="modal-actions"><button type="button" class="secondary-button" data-close>Cancel</button><button type="submit" class="primary-button">${old ? 'Save changes' : 'Save medication'}</button></div></form>`);
+    const old = pills.find(p => p.id === id); const p = old || { name: '', dosage: '', form: 'Tablet', color: COLORS[0], times: ['08:00'], schedule: 'daily', days: [1, 2, 3, 4, 5, 6, 0], startDate: dateKey(), endDate: '', notes: '', active: true, quantity: '' }; const colorButtons = COLORS.map(c => `<button type="button" class="swatch ${c === p.color ? 'selected' : ''}" style="--swatch:${c}" data-color="${c}" aria-label="Choose color ${c}" aria-pressed="${c === p.color}"></button>`).join(''); openModal(`<div class="modal-head"><h2 id="modal-title">${old ? 'Edit medication' : 'Add medication'}</h2><button class="close-modal" data-close aria-label="Close">×</button></div><p class="modal-intro">${old ? 'Keep your medication details up to date.' : 'Build a routine that works for you.'}</p><form id="pill-form" class="modal-form" novalidate><label class="field"><span>Medication name <b>*</b></span><input id="med-name" maxlength="100" required placeholder="e.g., Metformin" value="${esc(p.name)}"><small class="error-text" id="med-name-error"></small></label><div class="modal-grid"><label class="field"><span>Dosage</span><input id="med-dosage" maxlength="60" placeholder="e.g., 500 mg" value="${esc(p.dosage || '')}"></label><label class="field"><span>Form</span><select id="med-form">${FORMS.map(f => `<option ${f.toLowerCase() === String(p.form).toLowerCase() ? 'selected' : ''}>${f}</option>`).join('')}</select></label></div><div class="field"><span>Color marker</span><div class="swatches">${colorButtons}</div><input id="med-color" type="hidden" value="${esc(p.color)}"></div><div class="field"><span>Reminder times</span><div class="time-list" id="time-list">${(p.times || []).map((t, i) => `<div class="time-row"><input aria-label="Reminder time ${i + 1}" type="time" value="${esc(t)}" class="med-time"><button type="button" class="remove-time" aria-label="Remove reminder time">−</button></div>`).join('')}</div><button type="button" class="inline-button" id="add-time">＋ Add another reminder time</button></div><label class="field"><span>Frequency</span><select id="med-schedule">${SCHEDULES.map(s => `<option value="${s.value}" ${s.value === p.schedule ? 'selected' : ''}>${s.label}</option>`).join('')}</select></label><div class="field" id="days-field" ${p.schedule === 'custom' ? '' : 'hidden'}><span>Repeat on</span><div class="days-picker">${DAYS.map((d, i) => `<button type="button" class="day-toggle ${(p.days || []).includes(i) ? 'selected' : ''}" data-day="${i}" aria-pressed="${(p.days || []).includes(i)}">${d}</button>`).join('')}</div><small class="error-text" id="days-error"></small></div><div class="modal-grid"><label class="field"><span>Start date</span><input id="med-start" type="date" value="${esc(p.startDate || dateKey())}"></label><label class="field"><span>End date <small>Optional</small></span><input id="med-end" type="date" value="${esc(p.endDate || '')}"></label></div><div class="modal-grid">
+  <label class="field">
+    <span>Remaining quantity <small>Optional</small></span>
+    <input
+      id="med-quantity"
+      type="number"
+      min="0"
+      step="any"
+      inputmode="decimal"
+      placeholder="e.g., 30 or 100"
+      value="${esc(p.quantity ?? '')}"
+    >
+  </label>
+</div>
+
+<div class="modal-grid">
+  <label class="field">
+    <span>Units per dose</span>
+    <input
+      id="med-units-per-dose"
+      type="number"
+      min="0"
+      step="any"
+      inputmode="decimal"
+      placeholder="e.g., 0.5 or 5"
+      value="${esc(p.unitsPerDose ?? '')}"
+    >
+  </label>
+
+  <label class="field">
+    <span>Low-supply threshold <small>Optional</small></span>
+    <input
+      id="med-refill-threshold"
+      type="number"
+      min="0"
+      step="any"
+      inputmode="decimal"
+      placeholder="e.g., 5"
+      value="${esc(p.refillThreshold ?? '')}"
+    >
+  </label>
+</div>
+
+<p class="modal-note">
+  Supply tracking uses the selected medication form.
+  Enter the quantity used per dose in the same units as your
+  remaining quantity. Leave remaining quantity blank to disable
+  supply tracking. These fields do not recommend a medication dose.
+</p><label class="field"><span>Notes <small>Optional</small></span><textarea id="med-notes" rows="2" maxlength="500" placeholder="Take with food">${esc(p.notes || '')}</textarea></label><label class="check-row"><input id="med-active" type="checkbox" ${p.active ? 'checked' : ''}> Medication is active and reminders are enabled</label><p class="modal-note">
+  Tablets and capsules are counted individually. Liquid quantities
+  are recorded in mL. Use the same measurement for remaining
+  quantity, units per dose, and the low-supply threshold.
+  Leave remaining quantity blank to disable supply tracking.
+  These fields record supply and do not recommend a medication dose.
+</p><div class="modal-actions"><button type="button" class="secondary-button" data-close>Cancel</button><button type="submit" class="primary-button">${old ? 'Save changes' : 'Save medication'}</button></div></form>`);
     let selectedColor = p.color; $('#modal-root').querySelectorAll('[data-color]').forEach(b => b.onclick = () => { selectedColor = b.dataset.color; $('#med-color').value = selectedColor; $('#modal-root').querySelectorAll('[data-color]').forEach(x => { x.classList.toggle('selected', x === b); x.setAttribute('aria-pressed', String(x === b)); }); });
     $('#add-time').onclick = () => { const row = document.createElement('div'); row.className = 'time-row'; row.innerHTML = `<input aria-label="Reminder time" type="time" value="12:00" class="med-time"><button type="button" class="remove-time" aria-label="Remove reminder time">−</button>`; $('#time-list').append(row); row.querySelector('input').focus(); }; $('#time-list').onclick = e => { if (e.target.closest('.remove-time')) { const rows = $$('.time-row'); if (rows.length > 1) e.target.closest('.time-row').remove(); else e.target.closest('input')?.setAttribute('value', ''); } };
     $('#med-schedule').onchange = () => $('#days-field').hidden = $('#med-schedule').value !== 'custom'; $('#days-field').querySelectorAll('[data-day]').forEach(b => b.onclick = () => { b.classList.toggle('selected'); b.setAttribute('aria-pressed', String(b.classList.contains('selected'))); });
-    $('#pill-form').onsubmit = async e => { e.preventDefault(); const name = $('#med-name').value.trim(); const error = $('#med-name-error'); if (!name) { error.textContent = 'Enter a medication name.'; $('#med-name').focus(); return; } error.textContent = ''; const schedule = $('#med-schedule').value; const times = [...$('#time-list').querySelectorAll('.med-time')].map(x => x.value).filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).sort(); if (schedule !== 'asNeeded' && !times.length) { toast('Add at least one reminder time, or choose As needed.'); $('#time-list input').focus(); return; } const days = $$('#days-field [data-day].selected').map(b => Number(b.dataset.day)); if (schedule === 'custom' && !days.length) { $('#days-error').textContent = 'Choose at least one day.'; return; } $('#days-error').textContent = ''; const startDate = $('#med-start').value || dateKey(), endDate = $('#med-end').value; if (endDate && endDate < startDate) { toast('End date must be on or after the start date.'); return; } const updated = { id: old?.id || uid('pill'), name, dosage: $('#med-dosage').value.trim(), form: $('#med-form').value, color: $('#med-color').value, times, schedule, days: schedule === 'custom' ? days : [], startDate, endDate, notes: $('#med-notes').value.trim(), active: $('#med-active').checked, quantity: $('#med-quantity').value, createdAt: old?.createdAt || new Date().toISOString() }; if (old) await HealthLedgerNotifications.cancelPill(old); if (old) pills = pills.map(x => x.id === old.id ? updated : x); else pills.push(updated); save(KEYS.pills, pills); ensureDoseRecords(); closeModal(); render(); const result = await HealthLedgerNotifications.schedulePill(updated); if (updated.active && updated.schedule !== 'asNeeded' && updated.times.length) { if (result.supported && result.scheduled) toast(`${old ? 'Medication updated' : 'Medication added'} and ${result.scheduled} reminder(s) scheduled.`); else toast('Medication saved. Reminder notifications are available in the Android app.'); } else toast(old ? 'Medication updated.' : 'Medication saved.'); };
+    $('#pill-form').onsubmit = async e => { e.preventDefault(); const name = $('#med-name').value.trim(); const error = $('#med-name-error'); if (!name) { error.textContent = 'Enter a medication name.'; $('#med-name').focus(); return; } error.textContent = ''; const schedule = $('#med-schedule').value; const times = [...$('#time-list').querySelectorAll('.med-time')].map(x => x.value).filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).sort(); if (schedule !== 'asNeeded' && !times.length) { toast('Add at least one reminder time, or choose As needed.'); $('#time-list input').focus(); return; } const days = $$('#days-field [data-day].selected').map(b => Number(b.dataset.day)); if (schedule === 'custom' && !days.length) { $('#days-error').textContent = 'Choose at least one day.'; return; } $('#days-error').textContent = ''; const startDate = $('#med-start').value || dateKey(), endDate = $('#med-end').value; if (endDate && endDate < startDate) { toast('End date must be on or after the start date.'); return; } const quantityText = $('#med-quantity').value.trim();
+const unitsText = $('#med-units-per-dose').value.trim();
+const thresholdText = $('#med-refill-threshold').value.trim();
+
+const quantity = quantityText === '' ? '' : Number(quantityText);
+const unitsPerDose = unitsText === '' ? '' : Number(unitsText);
+const refillThreshold =
+  thresholdText === '' ? '' : Number(thresholdText);
+
+if (
+  quantity !== '' &&
+  (!Number.isFinite(quantity) || quantity < 0)
+) {
+  toast('Enter a remaining quantity of zero or greater.');
+  $('#med-quantity').focus();
+  return;
+}
+
+if (
+  unitsPerDose !== '' &&
+  (!Number.isFinite(unitsPerDose) || unitsPerDose <= 0)
+) {
+  toast('Units per dose must be greater than zero.');
+  $('#med-units-per-dose').focus();
+  return;
+}
+
+if (
+  refillThreshold !== '' &&
+  (!Number.isFinite(refillThreshold) || refillThreshold < 0)
+) {
+  toast('Enter a low-supply threshold of zero or greater.');
+  $('#med-refill-threshold').focus();
+  return;
+}
+
+if (quantity !== '' && unitsPerDose === '') {
+  toast('Enter how many units are used per dose.');
+  $('#med-units-per-dose').focus();
+  return;
+} const updated = { id: old?.id || uid('pill'), name, dosage: $('#med-dosage').value.trim(), form: $('#med-form').value, color: $('#med-color').value, times, schedule, days: schedule === 'custom' ? days : [], startDate, endDate, notes: $('#med-notes').value.trim(), active: $('#med-active').checked, quantity,
+unitsPerDose,
+refillThreshold, medicationInfo:
+  old &&
+  old.name === name &&
+  old.dosage === $('#med-dosage').value.trim() &&
+  old.form === $('#med-form').value
+    ? (old.medicationInfo || null)
+    : null, inventoryEpoch:
+  old &&
+  inventoryNumber(old.quantity) === inventoryNumber(quantity) &&
+  old.form === $('#med-form').value
+    ? (old.inventoryEpoch || '')
+    : uid('inventory'), createdAt: old?.createdAt || new Date().toISOString() }; if (old) await HealthLedgerNotifications.cancelPill(old); if (old) pills = pills.map(x => x.id === old.id ? updated : x); else pills.push(updated); save(KEYS.pills, pills); ensureDoseRecords(); closeModal(); render(); const result = await HealthLedgerNotifications.schedulePill(updated); if (updated.active && updated.schedule !== 'asNeeded' && updated.times.length) { if (result.supported && result.scheduled) toast(`${old ? 'Medication updated' : 'Medication added'} and ${result.scheduled} reminder(s) scheduled.`); else toast('Medication saved. Reminder notifications are available in the Android app.'); } else toast(old ? 'Medication updated.' : 'Medication saved.'); };
   }
   function mmol(value) { return value / 18.0182; } function mgdl(value) { return value * 18.0182; }
   function displayReading(entry, unit = $('#display-unit').value) { return unit === 'mmol/L' ? mmol(entry.unit === 'mg/dL' ? entry.value : mgdl(entry.value)) : entry.unit === 'mg/dL' ? entry.value : mgdl(entry.value); }
