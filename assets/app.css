@@ -530,3 +530,22 @@
   opacity: 0.65;
   cursor: default;
 }
+
+/* Former More page holds the original settings controls. */
+#page-more {
+  display: none !important;
+}
+
+/* Settings controls are moved here while the modal is open. */
+#settings-modal-content {
+  margin-top: 18px;
+}
+
+#settings-modal-content .settings-group:last-child {
+  margin-bottom: 0;
+}
+
+/* Blank space reserved for future More features. */
+.more-modal-content {
+  min-height: 180px;
+}

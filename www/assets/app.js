@@ -20,6 +20,10 @@
 
   function go(page, options = {}) {
     const { fromBack = false } = options;
+    if (page === 'more') {
+  openMoreModal();
+  return;
+}
 
     if (!page || page === currentPage) return;
 
@@ -993,10 +997,81 @@ function openMedicationHistory(id) {
     showPillActions(id);
   };
 }
-  function deletePill(id) { const p = pills.find(x => x.id === id); if (!p) return; HealthLedgerNotifications.cancelPill(p).then(() => { }); pills = pills.filter(x => x.id !== id); doses = doses.filter(d => d.pillId !== id); save(KEYS.pills, pills); save(KEYS.doses, doses); render(); toast('Medication deleted.'); }
-  function openModal(html) { const root = $('#modal-root'); root.innerHTML = `<div class="modal-backdrop" role="presentation"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">${html}</section></div>`; const backdrop = root.querySelector('.modal-backdrop'); backdrop.addEventListener('click', e => { if (e.target === backdrop) closeModal(); }); root.querySelectorAll('[data-close]').forEach(b => b.onclick = closeModal); const first = root.querySelector('input,button,select,textarea'); if (first) setTimeout(() => first.focus(), 20); document.addEventListener('keydown', escModal, { once: true }); }
+  function deletePill(id) { const p = pills.find(x => x.id === id); if (!p) return; HealthLedgerNotifications.cancelPill(p).then(() => { }); pills = pills.filter(x => x.id !== id); doses = doses.filter(d => d.pillId !== id); save(KEYS.pills, pills); save(KEYS.doses, doses); render(); toast('Medication deleted.'); } let settingsModalGroups = [];
+
+function restoreSettingsContent() {
+  const storage = $('#page-more');
+  if (!storage) return;
+
+  for (const group of settingsModalGroups) {
+    storage.appendChild(group);
+  }
+
+  settingsModalGroups = [];
+}
+
+function openSettingsModal() {
+  openModal(`
+    <div class="modal-head">
+      <h2 id="modal-title">Settings</h2>
+      <button
+        class="close-modal"
+        data-close
+        aria-label="Close settings"
+      >×</button>
+    </div>
+
+    <p class="modal-intro">
+      Preferences, privacy and tools.
+    </p>
+
+    <div id="settings-modal-content"></div>
+  `);
+
+  const storage = $('#page-more');
+  const destination = $('#settings-modal-content');
+
+  if (!storage || !destination) {
+    closeModal();
+    toast('Settings content is unavailable.');
+    return;
+  }
+
+  settingsModalGroups = Array.from(storage.children)
+    .filter(element => element.classList.contains('settings-group'));
+
+  for (const group of settingsModalGroups) {
+    destination.appendChild(group);
+  }
+
+  refreshNotificationStatus().catch(error => {
+    console.error('Could not refresh notification status:', error);
+  });
+}
+
+function openMoreModal() {
+  openModal(`
+    <div class="modal-head">
+      <h2 id="modal-title">More</h2>
+      <button
+        class="close-modal"
+        data-close
+        aria-label="Close More"
+      >×</button>
+    </div>
+
+    <div class="more-modal-content"></div>
+  `);
+}
+  function openModal(html) {
+  restoreSettingsContent();
+
+  const root = $('#modal-root'); root.innerHTML = `<div class="modal-backdrop" role="presentation"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">${html}</section></div>`; const backdrop = root.querySelector('.modal-backdrop'); backdrop.addEventListener('click', e => { if (e.target === backdrop) closeModal(); }); root.querySelectorAll('[data-close]').forEach(b => b.onclick = closeModal); const first = root.querySelector('input,button,select,textarea'); if (first) setTimeout(() => first.focus(), 20); document.addEventListener('keydown', escModal, { once: true }); }
   function escModal(e) { if (e.key === 'Escape') { closeModal(); return; } document.addEventListener('keydown', escModal, { once: true }); }
-  function closeModal() { $('#modal-root').innerHTML = ''; }
+  function closeModal() {
+  restoreSettingsContent();
+  $('#modal-root').innerHTML = '';
+} 
   function confirmAction(title, body, onConfirm, danger = true) { openModal(`<div class="modal-head"><h2 id="modal-title">${esc(title)}</h2><button class="close-modal" data-close aria-label="Close">×</button></div><p class="modal-intro">${esc(body)}</p><div class="modal-actions"><button class="secondary-button" data-close>Cancel</button><button class="primary-button ${danger ? 'danger-button' : ''}" id="confirm-action">Confirm</button></div>`); $('#confirm-action').onclick = () => { closeModal(); onConfirm(); }; } function medicationQuantityUnit(form) {
   switch (String(form).toLowerCase()) {
     case 'tablet':
@@ -1557,11 +1632,11 @@ function openHistoryDay(key) {
   $('#history-back-to-calendar').onclick = openHistoryCalendar;
 }
 
-  $$('.nav-item').forEach(b => b.onclick = () => go(b.dataset.nav)); $$('[data-go]').forEach(b => b.onclick = () => go(b.dataset.go)); $('#header-settings').onclick = () => go('more'); $('#quick-history').onclick = openHistoryCalendar; $('#add-pill').onclick = () => openPillModal(); $('#pill-filter').onchange = renderPills; $('#pill-search').oninput = renderPills; $('#display-unit').onchange = () => { settings.glucoseUnit = $('#display-unit').value; save(KEYS.settings, settings); renderGlucose(); }; $('#trend-range').onchange = renderGlucose; $('#theme-select').onchange = () => { applyTheme($('#theme-select').value); }; $('#export-data').onclick = exportData; $('#import-file').onchange = e => { if (e.target.files?.[0]) importData(e.target.files[0]); e.target.value = ''; }; $('#load-demo').onclick = loadDemo; $('#clear-data').onclick = clearAll; $('#resync-notifications').onclick = syncNotifications; $('#open-exact-settings').onclick = async () => { const result = await HealthLedgerNotifications.openExactAlarmSettings(); if (!result.opened) toast('Open Android Settings → Apps → Health Ledger → Alarms & reminders.'); else toast('Check the Alarms & reminders setting for Health Ledger.'); }; $('#open-notification-settings').onclick = async () => { if (!HealthLedgerNotifications.isNative()) { toast('Native notification settings are available in the Android app.'); return; } const p = await HealthLedgerNotifications.plugin(); if (p.openNotificationSettings) { await p.openNotificationSettings(); } else toast('Open Android Settings → Apps → Health Ledger → Notifications.'); };
+  $$('.nav-item').forEach(b => b.onclick = () => go(b.dataset.nav)); $$('[data-go]').forEach(b => b.onclick = () => go(b.dataset.go)); $('#header-settings').onclick = openSettingsModal; $('#quick-history').onclick = openHistoryCalendar; $('#add-pill').onclick = () => openPillModal(); $('#pill-filter').onchange = renderPills; $('#pill-search').oninput = renderPills; $('#display-unit').onchange = () => { settings.glucoseUnit = $('#display-unit').value; save(KEYS.settings, settings); renderGlucose(); }; $('#trend-range').onchange = renderGlucose; $('#theme-select').onchange = () => { applyTheme($('#theme-select').value); }; $('#export-data').onclick = exportData; $('#import-file').onchange = e => { if (e.target.files?.[0]) importData(e.target.files[0]); e.target.value = ''; }; $('#load-demo').onclick = loadDemo; $('#clear-data').onclick = clearAll; $('#resync-notifications').onclick = syncNotifications; $('#open-exact-settings').onclick = async () => { const result = await HealthLedgerNotifications.openExactAlarmSettings(); if (!result.opened) toast('Open Android Settings → Apps → Health Ledger → Alarms & reminders.'); else toast('Check the Alarms & reminders setting for Health Ledger.'); }; $('#open-notification-settings').onclick = async () => { if (!HealthLedgerNotifications.isNative()) { toast('Native notification settings are available in the Android app.'); return; } const p = await HealthLedgerNotifications.plugin(); if (p.openNotificationSettings) { await p.openNotificationSettings(); } else toast('Open Android Settings → Apps → Health Ledger → Notifications.'); };
   const storedTheme = safeLoad(KEYS.theme, 'system');
 applyTheme(storedTheme, false);$('#display-unit').value = settings.glucoseUnit || 'mg/dL'; $('#glucose-time').value = localISO().slice(0, 16); $('#glucose-unit').value = settings.glucoseUnit || 'mg/dL';
   const initial = (location.hash || '#today').slice(1);
-  const initialPage = ['today', 'pills', 'glucose', 'more'].includes(initial)
+  const initialPage = ['today', 'pills', 'glucose'].includes(initial)
     ? initial
     : 'today';
 
