@@ -89,6 +89,41 @@
     </a>
   </div>
 </section><section class="settings-group"><h2>About Health Ledger</h2><div class="settings-card about-card"><div class="about-brand"><span class="brand-mark">＋</span><div><strong>Health Ledger</strong><p>Version 1.0.0 · Offline-first</p></div></div><p>Your health records stay on this device unless you choose to export them.</p><p class="muted">This app supports organization and reminders. It does not replace medical advice.</p><details><summary>How do reminders work?</summary><p>Active medications with scheduled times can receive repeating local notifications in the Android app. As-needed medications do not receive automatic reminders. Browser preview mode saves your schedule but does not deliver native notifications.</p></details><details><summary>Why might exact alarm access be requested?</summary><p>Some Android versions require a separate Alarms & reminders setting for notifications to appear close to the selected time. You can still save your medication schedule if that access is unavailable.</p></details><details><summary>What if reminders do not appear?</summary><p>Check notification permission, the Pill reminders channel, battery restrictions and Alarms & reminders settings. Then use Resync reminders to refresh schedules.</p></details></div></section></section>
+<section
+  class="page"
+  id="page-appointments"
+  data-page="appointments"
+>
+  <button
+    type="button"
+    class="text-button"
+    id="appointments-back"
+  >
+    ← Back to More
+  </button>
+
+  <div class="page-heading">
+    <div>
+      <p class="eyebrow">YOUR UPCOMING VISITS</p>
+      <h1>Appointments</h1>
+      <p class="muted">Visits and checkups, organized.</p>
+    </div>
+
+    <button
+      type="button"
+      class="primary-button heading-action"
+      id="add-appointment"
+    >
+      ＋ Add
+    </button>
+  </div>
+
+  <p class="appointment-development-note">
+    Appointment reminders are not available yet.
+  </p>
+
+  <div id="appointment-list" class="appointment-list"></div>
+</section>
     </main>
     <nav class="bottom-nav" aria-label="Main navigation">
   <button

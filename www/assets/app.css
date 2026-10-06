@@ -549,3 +549,249 @@
 .more-modal-content {
   min-height: 180px;
 }
+
+.appointment-reminder-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.appointment-reminder-fieldset legend {
+  padding: 0 5px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.appointment-reminder-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.appointment-reminder-fieldset .modal-note {
+  margin-top: 13px;
+}
+
+@media (max-width: 380px) {
+  .appointment-reminder-options {
+    grid-template-columns: 1fr;
+  }
+}
+
+.appointment-card {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 18px;
+}
+
+.appointment-date-badge {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 3px;
+  min-height: 78px;
+  padding: 9px 5px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--soft);
+  color: var(--accent-dark);
+}
+
+.appointment-date-month,
+.appointment-date-weekday {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.appointment-date-badge strong {
+  font-size: 26px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.appointment-card-content {
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.appointment-card-content h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 750;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.appointment-card-content .appointment-time {
+  margin: 5px 0 7px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.appointment-card-content .appointment-detail {
+  margin: 4px 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.appointment-card-content .appointment-state {
+  margin-top: 9px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  background: var(--soft);
+  color: var(--accent-dark);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.appointment-card-content .appointment-state.needs-review {
+  background: var(--bg);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
+.appointment-edit-button {
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.appointment-edit-button:active {
+  background: var(--soft);
+}
+
+.appointment-date-accessible {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 380px) {
+  .appointment-card {
+    grid-template-columns: 48px minmax(0, 1fr) auto;
+    gap: 10px;
+    padding: 13px;
+  }
+
+  .appointment-date-badge {
+    min-height: 72px;
+  }
+
+  .appointment-date-badge strong {
+    font-size: 23px;
+  }
+
+  .appointment-edit-button {
+    padding: 0 8px;
+  }
+}
+
+.appointment-delete-button {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 8px;
+  padding: 10px 14px;
+  border: 1px solid var(--red);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--red);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.appointment-delete-button:active {
+  background: var(--bg);
+}
+
+.appointment-card-actions {
+  display: grid;
+  gap: 7px;
+  align-content: start;
+  width: 112px;
+}
+
+.appointment-card-actions .appointment-edit-button {
+  width: 100%;
+}
+
+.appointment-status-menu {
+  width: 100%;
+  min-height: 38px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.appointment-card-content .appointment-state.completed {
+  background: var(--soft);
+  color: var(--accent-dark);
+}
+
+.appointment-card-content .appointment-state.missed {
+  background: var(--bg);
+  color: var(--red);
+  border: 1px solid var(--red);
+}
+
+.appointment-card-content .appointment-state.canceled {
+  background: var(--bg);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
+.appointment-reschedule-current {
+  display: grid;
+  gap: 5px;
+  margin: 0 0 18px;
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+}
+
+.appointment-reschedule-current span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.appointment-reschedule-current strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 380px) {
+  .appointment-card-actions {
+    width: 96px;
+  }
+}

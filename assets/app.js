@@ -18,6 +18,714 @@
     highlightPillId = null,
     lastBackPressAt = 0;
 
+    const APPOINTMENT_KEY = 'healthLedger.appointments';
+
+let appointments = safeLoad(APPOINTMENT_KEY, []);
+if (!Array.isArray(appointments)) appointments = [];
+
+function saveAppointments(nextAppointments) {
+  try {
+    localStorage.setItem(
+      APPOINTMENT_KEY,
+      JSON.stringify(nextAppointments)
+    );
+  } catch (error) {
+    console.error('Appointment save failed:', error);
+    toast('Could not save appointments. Check device storage.');
+    return false;
+  }
+
+  appointments = nextAppointments;
+  return true;
+}
+
+function renderAppointments() {
+  const list = $('#appointment-list');
+  if (!list) return;
+
+  const sorted = [...appointments]
+    .filter(item => {
+      return (
+        item &&
+        typeof item.id === 'string' &&
+        Number.isFinite(parseLocal(item.at).getTime())
+      );
+    })
+    .sort((a, b) => parseLocal(a.at) - parseLocal(b.at));
+
+  if (!sorted.length) {
+    list.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon" aria-hidden="true">📅</div>
+        <h3>No appointments yet</h3>
+        <p>Add a visit or checkup to keep its details together.</p>
+
+        <button
+          type="button"
+          class="primary-button"
+          id="empty-add-appointment"
+        >
+          Add appointment
+        </button>
+      </div>
+    `;
+
+    $('#empty-add-appointment').onclick = () => {
+      openAppointmentModal();
+    };
+
+    return;
+  }
+
+  const now = Date.now();
+
+  const finishedStatuses = new Set([
+    'completed',
+    'missed',
+    'canceled',
+  ]);
+
+  const upcoming = sorted.filter(item => {
+    return (
+      !finishedStatuses.has(item.status) &&
+      parseLocal(item.at).getTime() >= now
+    );
+  });
+
+  const history = sorted
+    .filter(item => {
+      return (
+        finishedStatuses.has(item.status) ||
+        parseLocal(item.at).getTime() < now
+      );
+    })
+    .reverse();
+
+  function card(item) {
+    const date = parseLocal(item.at);
+
+    const status = finishedStatuses.has(item.status)
+      ? item.status
+      : date.getTime() < now
+        ? 'needs-review'
+        : 'scheduled';
+
+    const labels = {
+      scheduled: 'Scheduled',
+      'needs-review': 'Needs review',
+      completed: 'Completed',
+      missed: 'Missed',
+      canceled: 'Canceled',
+    };
+
+    const details = [
+      item.provider,
+      item.type,
+      item.visitFormat,
+    ].filter(Boolean).join(' · ');
+
+    return `
+      <article class="appointment-card card">
+        <div class="appointment-date-badge" aria-hidden="true">
+          <span class="appointment-date-month">
+            ${esc(fmtDate(date, { month: 'short' }))}
+          </span>
+
+          <strong>${date.getDate()}</strong>
+
+          <span class="appointment-date-weekday">
+            ${esc(fmtDate(date, { weekday: 'short' }))}
+          </span>
+        </div>
+
+        <div class="appointment-card-content">
+          <h2>${esc(item.title)}</h2>
+
+          <p class="appointment-time">
+            <span class="appointment-date-accessible">
+              ${esc(fmtDate(date, {
+                month: 'long',
+                day: 'numeric',
+                year: 'numeric',
+              }))}
+              at
+            </span>
+
+            ${esc(fmtTime(String(item.at).slice(11, 16)))}
+          </p>
+
+          ${details ? `
+            <p class="appointment-detail">${esc(details)}</p>
+          ` : ''}
+
+          ${item.location ? `
+            <p class="appointment-detail">
+              ${esc(item.location)}
+            </p>
+          ` : ''}
+
+          <span class="appointment-state ${status}">
+            ${labels[status]}
+          </span>
+        </div>
+
+        <div class="appointment-card-actions">
+          <button
+            type="button"
+            class="appointment-edit-button"
+            data-edit-appointment="${esc(item.id)}"
+            aria-label="Edit ${esc(item.title)}"
+          >
+            Edit
+          </button>
+
+          <select
+            class="appointment-status-menu"
+            data-appointment-status="${esc(item.id)}"
+            aria-label="Change status for ${esc(item.title)}"
+          >
+            <option value="">Status</option>
+            <option value="completed">Completed</option>
+            <option value="missed">Missed</option>
+            <option value="canceled">Canceled</option>
+            <option value="reschedule">Reschedule</option>
+          </select>
+        </div>
+      </article>
+    `;
+  }
+
+  list.innerHTML = `
+    ${upcoming.length ? `
+      <h2 class="appointment-group-title">Upcoming</h2>
+      ${upcoming.map(card).join('')}
+    ` : `
+      <p class="muted">No upcoming appointments.</p>
+    `}
+
+    ${history.length ? `
+      <h2 class="appointment-group-title">History</h2>
+      ${history.map(card).join('')}
+    ` : ''}
+  `;
+
+  list.querySelectorAll('[data-edit-appointment]')
+    .forEach(button => {
+      button.onclick = () => {
+        openAppointmentModal(button.dataset.editAppointment);
+      };
+    });
+
+  list.querySelectorAll('[data-appointment-status]')
+    .forEach(menu => {
+      menu.onchange = () => {
+        const id = menu.dataset.appointmentStatus;
+        const action = menu.value;
+
+        // Reset the action menu before opening another modal.
+        menu.value = '';
+
+        if (!action) return;
+
+        if (action === 'reschedule') {
+          openRescheduleAppointmentModal(id);
+          return;
+        }
+
+        setAppointmentStatus(id, action);
+      };
+    });
+}
+
+function setAppointmentStatus(id, status) {
+  const labels = {
+    completed: 'Completed',
+    missed: 'Missed',
+    canceled: 'Canceled',
+  };
+
+  if (!Object.hasOwn(labels, status)) return;
+
+  const appointment = appointments.find(item => item.id === id);
+  if (!appointment) return;
+
+  if (appointment.status === status) return;
+
+  const changedAt = new Date().toISOString();
+
+  const nextAppointments = appointments.map(item =>
+    item.id === id
+      ? {
+          ...item,
+          status,
+          statusChangedAt: changedAt,
+          updatedAt: changedAt,
+        }
+      : item
+  );
+
+  if (!saveAppointments(nextAppointments)) return;
+
+  renderAppointments();
+  toast(`Appointment marked ${labels[status].toLowerCase()}.`);
+}
+
+function openRescheduleAppointmentModal(id) {
+  const appointment = appointments.find(item => item.id === id);
+  if (!appointment) return;
+
+  openModal(`
+    <div class="modal-head">
+      <h2 id="modal-title">Reschedule appointment</h2>
+
+      <button
+        class="close-modal"
+        data-close
+        aria-label="Close reschedule form"
+      >×</button>
+    </div>
+
+    <p class="modal-intro">
+      ${esc(appointment.title)}
+    </p>
+
+    <div class="appointment-reschedule-current">
+      <span>Current appointment</span>
+      <strong>
+        ${esc(fmtDate(parseLocal(appointment.at), {
+          weekday: 'short',
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        }))}
+        ·
+        ${esc(fmtTime(String(appointment.at).slice(11, 16)))}
+      </strong>
+    </div>
+
+    <form id="reschedule-appointment-form" class="modal-form">
+      <div class="modal-grid">
+        <label class="field">
+          <span>New date <b>*</b></span>
+          <input
+            id="reschedule-appointment-date"
+            type="date"
+            required
+          >
+        </label>
+
+        <label class="field">
+          <span>New time <b>*</b></span>
+          <input
+            id="reschedule-appointment-time"
+            type="time"
+            required
+          >
+        </label>
+      </div>
+
+      <p class="modal-note">
+        Saving changes this appointment’s date and time and returns
+        its status to Scheduled. Other details are kept.
+        Notification scheduling is not enabled yet.
+      </p>
+
+      <div class="modal-actions">
+        <button
+          type="button"
+          class="secondary-button"
+          data-close
+        >
+          Cancel
+        </button>
+
+        <button type="submit" class="primary-button">
+          Save new time
+        </button>
+      </div>
+    </form>
+  `);
+
+  $('#reschedule-appointment-form').onsubmit = event => {
+    event.preventDefault();
+
+    const date = $('#reschedule-appointment-date').value;
+    const time = $('#reschedule-appointment-time').value;
+    const at = `${date}T${time}`;
+    const parsed = parseLocal(at);
+
+    if (
+      !date ||
+      !time ||
+      !Number.isFinite(parsed.getTime()) ||
+      localISO(parsed).slice(0, 16) !== at
+    ) {
+      toast('Enter a valid new date and time.');
+      return;
+    }
+
+    if (parsed.getTime() <= Date.now()) {
+      toast('Choose a future date and time.');
+      return;
+    }
+
+    const currentAppointment = appointments.find(
+      item => item.id === id
+    );
+
+    if (!currentAppointment) {
+      closeModal();
+      toast('This appointment is no longer available.');
+      return;
+    }
+
+    const changedAt = new Date().toISOString();
+
+    const rescheduleHistory = Array.isArray(
+      currentAppointment.rescheduleHistory
+    )
+      ? currentAppointment.rescheduleHistory
+      : [];
+
+    const updated = {
+      ...currentAppointment,
+      at,
+      status: 'scheduled',
+      statusChangedAt: changedAt,
+      updatedAt: changedAt,
+      rescheduleHistory: [
+        ...rescheduleHistory,
+        {
+          previousAt: currentAppointment.at,
+          newAt: at,
+          previousStatus: currentAppointment.status || 'scheduled',
+          changedAt,
+        },
+      ],
+    };
+
+    const nextAppointments = appointments.map(item =>
+      item.id === id ? updated : item
+    );
+
+    if (!saveAppointments(nextAppointments)) return;
+
+    closeModal();
+    renderAppointments();
+    toast('Appointment rescheduled.');
+  };
+}
+
+function openAppointmentModal(id = null) {
+  const old = appointments.find(item => item.id === id);
+
+  if (id && !old) {
+    toast('This appointment is no longer available.');
+    return;
+  }
+
+  const appointment = old || {
+    title: '',
+    at: '',
+    provider: '',
+    type: '',
+    visitFormat: '',
+    location: '',
+    reminders: [],
+    notes: '',
+  };
+
+  const types = [
+    'Checkup',
+    'Specialist',
+    'Lab work',
+    'Dental',
+    'Therapy',
+    'Other',
+  ];
+
+  const visitFormats = [
+    'In person',
+    'Phone',
+    'Video',
+  ];
+
+  const reminderOptions = [
+    { minutes: 1440, label: '1 day before' },
+    { minutes: 120, label: '2 hours before' },
+    { minutes: 60, label: '1 hour before' },
+    { minutes: 15, label: '15 minutes before' },
+  ];
+
+  const selectedReminders = Array.isArray(appointment.reminders)
+    ? appointment.reminders.map(Number)
+    : [];
+
+  const existingTime = String(appointment.at || '');
+  const dateValue = existingTime.slice(0, 10);
+  const timeValue = existingTime.slice(11, 16);
+
+  openModal(`
+    <div class="modal-head">
+      <h2 id="modal-title">
+        ${old ? 'Edit appointment' : 'Add appointment'}
+      </h2>
+
+      <button
+        class="close-modal"
+        data-close
+        aria-label="Close appointment form"
+      >×</button>
+    </div>
+
+    <form id="appointment-form" class="modal-form">
+      <label class="field">
+        <span>Appointment title <b>*</b></span>
+        <input
+          id="appointment-title"
+          type="text"
+          maxlength="100"
+          required
+          value="${esc(appointment.title || '')}"
+        >
+      </label>
+
+      <div class="modal-grid">
+        <label class="field">
+          <span>Date <b>*</b></span>
+          <input
+            id="appointment-date"
+            type="date"
+            required
+            value="${esc(dateValue)}"
+          >
+        </label>
+
+        <label class="field">
+          <span>Time <b>*</b></span>
+          <input
+            id="appointment-clock"
+            type="time"
+            required
+            value="${esc(timeValue)}"
+          >
+        </label>
+      </div>
+
+      <label class="field">
+        <span>Provider</span>
+        <input
+          id="appointment-provider"
+          type="text"
+          maxlength="100"
+          value="${esc(appointment.provider || '')}"
+        >
+      </label>
+
+      <div class="modal-grid">
+        <label class="field">
+          <span>Type</span>
+          <select id="appointment-type">
+            <option value="">Select type</option>
+
+            ${types.map(type => `
+              <option
+                value="${esc(type)}"
+                ${appointment.type === type ? 'selected' : ''}
+              >
+                ${esc(type)}
+              </option>
+            `).join('')}
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Visit format</span>
+          <select id="appointment-visit-format">
+            <option value="">Select format</option>
+
+            ${visitFormats.map(format => `
+              <option
+                value="${esc(format)}"
+                ${appointment.visitFormat === format ? 'selected' : ''}
+              >
+                ${esc(format)}
+              </option>
+            `).join('')}
+          </select>
+        </label>
+      </div>
+
+      <label class="field">
+        <span>Location</span>
+        <input
+          id="appointment-location"
+          type="text"
+          maxlength="200"
+          value="${esc(appointment.location || '')}"
+        >
+      </label>
+
+      <fieldset class="appointment-reminder-fieldset">
+        <legend>Reminders</legend>
+
+        <div class="appointment-reminder-options">
+          ${reminderOptions.map(option => `
+            <label class="check-row">
+              <input
+                type="checkbox"
+                name="appointment-reminder"
+                value="${option.minutes}"
+                ${selectedReminders.includes(option.minutes)
+                  ? 'checked'
+                  : ''}
+              >
+              <span>${esc(option.label)}</span>
+            </label>
+          `).join('')}
+        </div>
+
+        <p class="modal-note">
+          Leave all unchecked for no reminders.
+          Selections are saved, but notifications are not enabled yet.
+        </p>
+      </fieldset>
+
+      <label class="field">
+        <span>Notes</span>
+        <textarea
+          id="appointment-notes"
+          rows="3"
+          maxlength="1000"
+        >${esc(appointment.notes || '')}</textarea>
+      </label>
+
+      <p class="modal-note">
+        Appointment times use your device’s local time zone.
+      </p>
+
+      <div class="modal-actions">
+        <button
+          type="button"
+          class="secondary-button"
+          data-close
+        >
+          Cancel
+        </button>
+
+        <button type="submit" class="primary-button">
+          ${old ? 'Save changes' : 'Save appointment'}
+        </button>
+      </div>
+
+      ${old ? `
+  <button
+    type="button"
+    class="appointment-delete-button"
+    id="delete-appointment"
+  >
+    Delete appointment
+  </button>
+` : ''}
+    </form>
+  `);
+
+  const deleteButton = $('#delete-appointment');
+
+if (deleteButton) {
+  deleteButton.onclick = () => {
+    confirmAction(
+      'Delete appointment?',
+      `This permanently removes "${old.title}" from this device.`,
+      () => {
+        const nextAppointments = appointments.filter(
+          item => item.id !== old.id
+        );
+
+        if (!saveAppointments(nextAppointments)) return;
+
+        renderAppointments();
+        toast('Appointment deleted.');
+      }
+    );
+  };
+}
+
+  $('#appointment-form').onsubmit = event => {
+    event.preventDefault();
+
+    const title = $('#appointment-title').value.trim();
+    const date = $('#appointment-date').value;
+    const time = $('#appointment-clock').value;
+    const at = `${date}T${time}`;
+
+    if (!title) {
+      toast('Enter an appointment title.');
+      $('#appointment-title').focus();
+      return;
+    }
+
+    if (
+      !date ||
+      !time ||
+      !Number.isFinite(parseLocal(at).getTime())
+    ) {
+      toast('Enter a valid appointment date and time.');
+      $('#appointment-date').focus();
+      return;
+    }
+
+    const reminders = Array.from(
+      $('#appointment-form').querySelectorAll(
+        'input[name="appointment-reminder"]:checked'
+      )
+    ).map(input => Number(input.value));
+
+    const updated = {
+      ...old,
+      id: old?.id || uid('appointment'),
+      title,
+      at,
+      provider: $('#appointment-provider').value.trim(),
+      type: $('#appointment-type').value,
+      visitFormat: $('#appointment-visit-format').value,
+      location: $('#appointment-location').value.trim(),
+      reminders,
+      notes: $('#appointment-notes').value.trim(),
+      createdAt: old?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const nextAppointments = old
+      ? appointments.map(item =>
+          item.id === old.id ? updated : item
+        )
+      : [...appointments, updated];
+
+    if (!saveAppointments(nextAppointments)) return;
+
+    closeModal();
+    renderAppointments();
+
+    toast(old ? 'Appointment updated.' : 'Appointment saved.');
+  };
+}
+
+function returnFromAppointments() {
+  closeModal();
+
+  if (currentPage === 'appointments') {
+    pageHistory.pop();
+
+  if (currentPage === 'appointments') renderAppointments();
+
+    const previousPage = pageHistory[pageHistory.length - 1] || 'today';
+    go(previousPage, { fromBack: true });
+  }
+
+  openMoreModal();
+}
+
   function go(page, options = {}) {
     const { fromBack = false } = options;
     if (page === 'more') {
@@ -1060,8 +1768,25 @@ function openMoreModal() {
       >×</button>
     </div>
 
-    <div class="more-modal-content"></div>
+    <div class="settings-card settings-actions vertical">
+      <button
+        type="button"
+        class="settings-link"
+        id="open-appointments"
+      >
+        <span>
+          <strong>📅 Appointments</strong>
+          <small>Visits and checkups</small>
+        </span>
+        <b aria-hidden="true">›</b>
+      </button>
+    </div>
   `);
+
+  $('#open-appointments').onclick = () => {
+    closeModal();
+    go('appointments');
+  };
 }
   function openModal(html) {
   restoreSettingsContent();
@@ -1226,7 +1951,9 @@ refillThreshold, medicationInfo:
 }
   async function refreshNotificationStatus() { const native = HealthLedgerNotifications.isNative(); const status = $('#notification-status'), dot = $('#notification-dot'), exact = $('#exact-status'); if (!native) { status.textContent = 'Browser preview mode'; dot.style.background = 'var(--amber)'; exact.textContent = 'Available in Android app where supported'; $('#notification-diagnostic').textContent = 'Native scheduled notifications are available after installing this app on Android. Medication schedules and records still work in browser mode.'; $('#open-exact-settings').disabled = true; $('#open-notification-settings').disabled = true; return; } $('#open-exact-settings').disabled = false; $('#open-notification-settings').disabled = false; const p = await HealthLedgerNotifications.plugin().checkPermissions().catch(() => ({ display: 'unknown' })); const granted = p.display === 'granted'; status.textContent = granted ? 'Enabled' : 'Not allowed'; dot.style.background = granted ? 'var(--accent)' : 'var(--amber)'; const a = await HealthLedgerNotifications.checkExactAlarmPermission(); exact.textContent = !a.supported ? 'Check Android settings if reminders are late' : a.granted ? 'Enabled' : 'Needs Android setting'; $('#notification-diagnostic').textContent = granted ? 'Notification permission is enabled. Use Resync reminders after changing medication schedules.' : 'Allow notification access to receive scheduled medication reminders.'; }
   async function syncNotifications() { const result = await HealthLedgerNotifications.syncPills(pills); let message = result.message || 'Reminder sync finished.'; if (result.exactAlarm?.supported && result.exactAlarm.granted === false) message += ' For reminders at the exact selected time, enable Alarms & reminders for Health Ledger in Android settings.'; $('#notification-diagnostic').textContent = message; await refreshNotificationStatus(); toast(result.supported ? message : 'Browser preview mode: medication schedules saved, but native notifications are unavailable.'); }
-  function render() { ensureDoseRecords(); if (currentPage === 'today') renderToday(); if (currentPage === 'pills') renderPills(); if (currentPage === 'glucose') renderGlucose(); if (currentPage === 'more') refreshNotificationStatus(); }
+  function render() { ensureDoseRecords(); if (currentPage === 'today') renderToday(); if (currentPage === 'pills') renderPills(); if (currentPage === 'glucose') renderGlucose(); if (currentPage === 'appointments') {
+  renderAppointments();
+} if (currentPage === 'more') refreshNotificationStatus(); }
   async function exportData() {
   const data = {
     app: 'Health Ledger',
@@ -1669,39 +2396,48 @@ applyTheme(storedTheme, false);$('#display-unit').value = settings.glucoseUnit |
   window.addEventListener('focus', () => { ensureDoseRecords(); renderToday(); });
 
   function installAndroidBackHandler() {
-    const App = window.Capacitor?.Plugins?.App;
+  const App = window.Capacitor?.Plugins?.App;
 
-    // This runs only inside the installed Capacitor Android app.
-    // Browser preview keeps working normally.
-    if (!App?.addListener) return;
+  // This runs only inside the installed Capacitor Android app.
+  // Browser preview keeps working normally.
+  if (!App?.addListener) return;
 
-    App.addListener('backButton', async () => {
-      // First Back closes any open add/edit/delete/settings dialog.
-      if (document.querySelector('#modal-root .modal-backdrop')) {
-        closeModal();
-        return;
-      }
+  App.addListener('backButton', async () => {
+    // First Back closes any open add/edit/delete/settings dialog.
+    if (document.querySelector('#modal-root .modal-backdrop')) {
+      closeModal();
+      return;
+    }
 
-      // Remove the current page and display the page visited before it.
-      if (pageHistory.length > 1) {
-        pageHistory.pop();
-        const previousPage = pageHistory[pageHistory.length - 1];
-        go(previousPage, { fromBack: true });
-        return;
-      }
+    // Leaving Appointments returns to the previous page and opens More.
+    if (currentPage === 'appointments') {
+      returnFromAppointments();
+      return;
+    }
 
-      // At the root screen (Today): require a second press to exit.
-      const now = Date.now();
+    // Remove the current page and display the page visited before it.
+    if (pageHistory.length > 1) {
+      pageHistory.pop();
+      const previousPage = pageHistory[pageHistory.length - 1];
+      go(previousPage, { fromBack: true });
+      return;
+    }
 
-      if (now - lastBackPressAt < 2000) {
-        await App.exitApp();
-        return;
-      }
+    // At the root screen (Today): require a second press to exit.
+    const now = Date.now();
 
-      lastBackPressAt = now;
-      toast('Press Back again to exit Health Ledger.');
-    });
-  }
+    if (now - lastBackPressAt < 2000) {
+      await App.exitApp();
+      return;
+    }
+
+    lastBackPressAt = now;
+    toast('Press Back again to exit Health Ledger.');
+  });
+}
+
+  $('#add-appointment').onclick = () => openAppointmentModal();
+  $('#appointments-back').onclick = returnFromAppointments;
 
   installAndroidBackHandler();
 })();
