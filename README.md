@@ -64,5 +64,6 @@ Planned improvements, in order:
 5. Add dose notes and skip reasons.
 6. Add 7-day and 30-day adherence summaries.
 7. Improve backups with a last-backup indicator, import preview, and restore summary.
+8. Add appointment tracking with scheduled reminder notifications.
 
 Roadmap items are planned features, not a list of features already available.
