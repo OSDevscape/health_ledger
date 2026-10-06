@@ -57,8 +57,8 @@ Health Ledger supports personal organization and recordkeeping. It does not prov
 
 Planned improvements, in order:
 
-1. Polish the 30-day calendar with indicator dots for doses and glucose readings.
-2. Add refill tracking using recorded medication quantities.
+1. ~~Polish the 30-day calendar with indicator dots for doses and glucose readings.~~
+2. ~~Add refill tracking using recorded medication quantities.~~
 3. Add a Reminder Health screen with a test-reminder option.
 4. Add Mark taken and Skip buttons directly to notifications.
 5. Add dose notes and skip reasons.

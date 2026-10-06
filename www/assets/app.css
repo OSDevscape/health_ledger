@@ -375,3 +375,177 @@
     min-height: 68px;
   }
 }
+
+/* Medication information links */
+.medication-resource-link {
+  width: 100%;
+  text-decoration: none;
+}
+
+.medication-resource-link:active {
+  background: var(--soft);
+}
+
+.medication-information-note {
+  margin: 14px 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+/* Individual medication history */
+.medication-history-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.medication-history-summary > div {
+  display: grid;
+  gap: 4px;
+  padding: 12px 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  text-align: center;
+}
+
+.medication-history-summary strong {
+  font-size: 19px;
+  font-variant-numeric: tabular-nums;
+}
+
+.medication-history-summary span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.medication-history-days {
+  display: grid;
+  gap: 12px;
+}
+
+.medication-history-day {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg);
+}
+
+.medication-history-day h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+
+.medication-dose-history-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+}
+
+.medication-dose-history-row + .medication-dose-history-row {
+  border-top: 1px solid var(--border);
+}
+
+.medication-dose-history-time {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.medication-dose-history-time strong {
+  font-size: 12px;
+}
+
+.medication-dose-history-time small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.medication-history-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.medication-label-identity {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg);
+}
+
+.medication-label-identity p {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.medication-label-identity p:last-child {
+  margin-bottom: 0;
+}
+
+.medication-label-section {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+}
+
+.medication-label-section summary {
+  padding: 13px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.medication-label-text {
+  padding: 0 13px 14px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.medication-label-return {
+  margin-top: 16px;
+}
+
+.medication-info-actions {
+  display: grid;
+  gap: 9px;
+  margin-top: 16px;
+}
+
+.medication-info-actions button {
+  width: 100%;
+}
+
+.medication-info-actions button:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+/* Former More page holds the original settings controls. */
+#page-more {
+  display: none !important;
+}
+
+/* Settings controls are moved here while the modal is open. */
+#settings-modal-content {
+  margin-top: 18px;
+}
+
+#settings-modal-content .settings-group:last-child {
+  margin-bottom: 0;
+}
+
+/* Blank space reserved for future More features. */
+.more-modal-content {
+  min-height: 180px;
+}
