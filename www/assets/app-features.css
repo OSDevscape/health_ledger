@@ -67,3 +67,36 @@
 .adherence-med small { color: var(--muted); }
 .adherence-reasons { list-style: none; margin: 0; padding: 0; }
 .adherence-reasons li { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid var(--border); }
+
+/* Archive button */
+.archive-button { width: 100%; margin-top: 8px; }
+
+/* Appointments on Today */
+.appointment-today .dose-main h3 { overflow-wrap: anywhere; }
+
+/* Allergens */
+.allergen-card { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; border-left: 5px solid var(--border); }
+.allergen-card.sev-mild { border-left-color: #4b9b76; }
+.allergen-card.sev-moderate { border-left-color: #c28b46; }
+.allergen-card.sev-severe { border-left-color: #d16f72; }
+.allergen-card.sev-life-threatening { border-left-color: #b3261e; }
+.allergen-card-main { min-width: 0; flex: 1; }
+.allergen-card h2 { margin: 0 0 4px; font-size: 1.05rem; overflow-wrap: anywhere; }
+.allergen-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 6px; color: var(--muted); font-size: .85rem; }
+.allergen-detail { margin: 4px 0 0; font-size: .9rem; overflow-wrap: anywhere; }
+.allergen-badge { padding: 2px 10px; border-radius: 999px; font-weight: 600; color: #fff; background: var(--muted); }
+.allergen-badge.sev-mild { background: #4b9b76; }
+.allergen-badge.sev-moderate { background: #c28b46; }
+.allergen-badge.sev-severe { background: #d16f72; }
+.allergen-badge.sev-life-threatening { background: #b3261e; }
+
+.allergen-widget { padding: 16px; margin-top: 12px; }
+.allergen-widget-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.allergen-widget-head h2 { margin: 2px 0 0; font-size: 1.05rem; }
+.allergen-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.allergen-chip { padding: 5px 12px; border-radius: 999px; font-size: .85rem; font-weight: 600; border: 1px solid var(--border); background: var(--card); }
+.allergen-chip.sev-mild { border-color: #4b9b76; }
+.allergen-chip.sev-moderate { border-color: #c28b46; }
+.allergen-chip.sev-severe { background: #d16f72; border-color: #d16f72; color: #fff; }
+.allergen-chip.sev-life-threatening { background: #b3261e; border-color: #b3261e; color: #fff; }
+.allergen-chip.more { color: var(--muted); font-weight: 500; }
