@@ -5,15 +5,19 @@
   const CHANNEL_ID = 'pill-reminders';
   const APPOINTMENT_CHANNEL_ID = 'appointment-reminders';
   const ACTION_TYPE_ID = 'PILL_DOSE_ACTIONS';
+  const APPOINTMENT_ACTION_TYPE_ID = 'APPOINTMENT_ACTIONS';
   const PLUGIN_NAME = 'LocalNotifications';
   const MAX_ID = 2000000000;
 
   // ID layout (all must stay below 2^31 - 1):
   //   Pill reminders      < 1,100,000,000  (per-pill block of 1000: +100.. repeating, +800..999 snoozes)
   //   Appointment reminders 1,100,000,000 .. 1,110,000,000
+  //   Missed-dose follow-ups 1,110,000,000 .. 1,120,000,000
   //   Test reminder        1,999,999,000
   const APPOINTMENT_ID_MIN = 1100000000;
   const APPOINTMENT_ID_MAX = 1110000000;
+  const MISSED_ID_MIN = 1110000000;
+  const MISSED_ID_MAX = 1120000000;
   const TEST_ID = 1999999000;
   const SNOOZE_OFFSET = 700;
 
@@ -22,6 +26,10 @@
   const FINISHED_STATUSES = ['completed', 'missed', 'canceled'];
   const DAY_MAP = { 0: 1, 1: 2, 2: 3, 3: 4, 4: 5, 5: 6, 6: 7 };
 
+  const APPOINTMENT_ACTIONS = [
+    { id: 'completed', title: 'Completed' },
+    { id: 'missed', title: 'Missed' },
+  ];
   const DOSE_ACTIONS = [
     { id: 'taken', title: 'Mark taken' },
     { id: 'skip', title: 'Skip' },
@@ -206,7 +214,7 @@
   async function registerActionTypes() {
     if (!isNative() || typeof plugin().registerActionTypes !== 'function') return { supported: false };
     try {
-      await plugin().registerActionTypes({ types: [{ id: ACTION_TYPE_ID, actions: DOSE_ACTIONS }] });
+      await plugin().registerActionTypes({ types: [{ id: ACTION_TYPE_ID, actions: DOSE_ACTIONS }, { id: APPOINTMENT_ACTION_TYPE_ID, actions: APPOINTMENT_ACTIONS }] });
       return { supported: true };
     } catch (error) { return { supported: true, error: errorMessage(error) }; }
   }
@@ -259,12 +267,14 @@
     if (!isNative()) return { supported: false };
     const pending = await plugin().getPending();
     const list = pending.notifications || [];
-    const summary = { supported: true, pill: 0, snooze: 0, appointment: 0, test: 0, other: 0, total: list.length };
+    const summary = { supported: true, pill: 0, snooze: 0, appointment: 0, missed: 0, appointmentMissed: 0, test: 0, other: 0, total: list.length };
     for (const item of list) {
       const type = item.extra?.type;
-      if (type === 'pill-dose') summary.pill += 1;
+      if (type === 'appointment-missed') summary.appointmentMissed += 1;
+      else if (type === 'pill-dose') summary.pill += 1;
       else if (type === 'pill-snooze') summary.snooze += 1;
       else if (type === 'appointment') summary.appointment += 1;
+      else if (type === 'pill-missed' || (item.id >= MISSED_ID_MIN && item.id < MISSED_ID_MAX)) summary.missed += 1;
       else if (type === 'test' || item.id === TEST_ID) summary.test += 1;
       else if (item.id >= APPOINTMENT_ID_MIN && item.id < APPOINTMENT_ID_MAX) summary.appointment += 1;
       else if (item.id < APPOINTMENT_ID_MIN) { if (item.id % 1000 >= 800) summary.snooze += 1; else summary.pill += 1; }
@@ -372,6 +382,73 @@
     catch (error) { return { supported: true, error: errorMessage(error) }; }
   }
 
+
+  /* ---------- Missed-dose follow-ups ---------- */
+
+  function missedIdFor(pillId, key, time) { return MISSED_ID_MIN + (hashString(`${pillId}|${key}|${time}`) % (MISSED_ID_MAX - MISSED_ID_MIN - 1)); }
+
+  // entries: [{ pill, dateKey, time, at: Date }]. Replaces every earlier follow-up.
+  async function syncMissedFollowups(entries, minutes) {
+    if (!isNative()) return { supported: false, scheduled: 0 };
+    try {
+      const pending = await plugin().getPending();
+      const old = (pending.notifications || []).filter(n => n.extra?.type === 'pill-missed' || (n.id >= MISSED_ID_MIN && n.id < MISSED_ID_MAX));
+      if (old.length) await plugin().cancel({ notifications: old.map(n => ({ id: n.id })) });
+      if (!entries || !entries.length || !minutes) return { supported: true, scheduled: 0, cancelled: old.length };
+      const permission = await checkPermissionQuietly();
+      if (!permission.granted) return { supported: true, scheduled: 0, reason: 'permission-denied' };
+      await init();
+      const seen = new Set();
+      const notifications = [];
+      for (const { pill, dateKey, time, timeLabel, at } of entries) {
+        const id = missedIdFor(pill.id, dateKey, time);
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const color = normalizeNotificationColor(pill.color);
+        notifications.push({
+          id,
+          title: 'Missed dose?',
+          body: `${pill.name}${pill.dosage ? ` (${pill.dosage})` : ''} was due at ${timeLabel || time}. Tap to record it.`,
+          channelId: CHANNEL_ID,
+          color,
+          actionTypeId: ACTION_TYPE_ID,
+          schedule: { at, allowWhileIdle: true },
+          extra: { type: 'pill-missed', pillId: pill.id, pillColor: color, weekday: null, time, dateKey },
+        });
+      }
+      if (notifications.length) await plugin().schedule({ notifications });
+      return { supported: true, scheduled: notifications.length, cancelled: old.length };
+    } catch (error) { return { supported: true, scheduled: 0, error: errorMessage(error) }; }
+  }
+
+
+  /* ---------- Missed-appointment follow-ups ---------- */
+
+  // entries: [{ appointment, at: Date }]. Replaces every earlier follow-up.
+  async function syncMissedAppointments(entries) {
+    if (!isNative()) return { supported: false, scheduled: 0 };
+    try {
+      const pending = await plugin().getPending();
+      const old = (pending.notifications || []).filter(n => n.extra?.type === 'appointment-missed');
+      if (old.length) await plugin().cancel({ notifications: old.map(n => ({ id: n.id })) });
+      if (!entries || !entries.length) return { supported: true, scheduled: 0, cancelled: old.length };
+      const permission = await checkPermissionQuietly();
+      if (!permission.granted) return { supported: true, scheduled: 0, reason: 'permission-denied' };
+      await init();
+      const notifications = entries.map(({ appointment, at }) => ({
+        id: appointmentBase(appointment) + 4,
+        title: 'Appointment finished?',
+        body: `How did "${appointment.title}" go? Mark it completed or missed.`,
+        channelId: APPOINTMENT_CHANNEL_ID,
+        actionTypeId: APPOINTMENT_ACTION_TYPE_ID,
+        schedule: { at, allowWhileIdle: true },
+        extra: { type: 'appointment-missed', appointmentId: appointment.id },
+      }));
+      await plugin().schedule({ notifications });
+      return { supported: true, scheduled: notifications.length, cancelled: old.length };
+    } catch (error) { return { supported: true, scheduled: 0, error: errorMessage(error) }; }
+  }
+
   /* ---------- Test reminder ---------- */
 
   async function sendTestReminder(delaySeconds = 5) {
@@ -465,7 +542,7 @@
     isNative, init, requestPermission, createAndroidChannel, listChannels,
     notificationIdForPill, notificationIdsForPill,
     schedulePill, cancelPill, syncPills,
-    snoozeDose, cancelSnooze, sendTestReminder,
+    snoozeDose, cancelSnooze, syncMissedFollowups, syncMissedAppointments, sendTestReminder,
     scheduleAppointment, cancelAppointment, cancelAllAppointments, syncAppointments,
     getPendingSummary, expectedPillReminderCount, expectedAppointmentReminderCount,
     registerActionListener, registerReceivedListener,

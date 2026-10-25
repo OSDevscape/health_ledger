@@ -37,10 +37,19 @@ Health Ledger is a simple, offline-first Android app for managing medication rou
 - Choose reminders 1 day, 2 hours, 1 hour or 15 minutes before.
 - Mark appointments completed, missed or canceled, reschedule them, or reopen them.
 - Reminders are rescheduled automatically when you edit, reschedule or change status, and removed on delete.
+- Today’s appointments appear in Today’s schedule, and the next appointment is mentioned in A Gentle Reminder.
+- Past, completed, missed and canceled appointments move into an Archive pop-out.
+
+### Allergens
+
+- Keep a list of allergens with type, severity, reaction and notes (More → Allergens).
+- An Allergens widget on Today shows your list at a glance, with severe ones highlighted.
 
 ### Reminders and personalization
 
 - Receive scheduled medication reminders with **Mark taken**, **Skip** and **Snooze** buttons. On Android these buttons open Health Ledger briefly to save your choice.
+- Get a “Missed dose?” follow-up reminder when a dose is still unrecorded 15, 30 or 60 minutes after its time (30 by default, can be turned off). It is cancelled once you record the dose.
+- Get an “Appointment finished?” reminder 30, 60 or 120 minutes after an appointment starts if it is still not marked, with Completed and Missed buttons (60 by default, can be turned off).
 - Choose the snooze length (5, 10, 15 or 30 minutes).
 - Use **Reminder health** to check permission, channel, exact-alarm access and scheduled counts, and to send a test reminder.
 - Refresh reminder schedules with Resync reminders.
@@ -50,7 +59,7 @@ Health Ledger is a simple, offline-first Android app for managing medication rou
 
 Your records stay on your device unless you choose to export them.
 
-- Export your health records (medications, doses, glucose, appointments, settings) as a backup. The last backup time is shown in Settings.
+- Export your health records (medications, doses, glucose, appointments, allergens, settings) as a backup. The last backup time is shown in Settings.
 - Import a backup with a preview of what it contains compared with this device, then a restore summary. A restore can be undone.
 - Try sample data to explore the app.
 - Clear locally stored records when needed.

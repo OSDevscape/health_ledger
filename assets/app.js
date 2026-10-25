@@ -4,7 +4,7 @@
   const KEYS = {
     pills: 'healthLedger.pills', doses: 'healthLedger.doses', glucose: 'healthLedger.glucose',
     settings: 'healthLedger.settings', theme: 'healthLedger.theme', onboarding: 'healthLedger.onboarding',
-    appointments: 'healthLedger.appointments', lastBackup: 'healthLedger.lastBackup',
+    appointments: 'healthLedger.appointments', allergens: 'healthLedger.allergens', lastBackup: 'healthLedger.lastBackup',
     preRestore: 'healthLedger.preRestore', reminderTest: 'healthLedger.reminderTest',
     reminderSchema: 'healthLedger.reminderSchema',
   };
@@ -19,7 +19,7 @@
   const SKIP_REASONS = ['Felt unwell', 'Side effects', 'Out of supply', 'Advised not to take', 'Not needed', 'Other'];
   const SNOOZE_CHOICES = [5, 10, 15, 30];
   const NOTE_MAX = 300;
-  const defaultSettings = () => ({ targetLow: 70, targetHigh: 180, glucoseUnit: 'mg/dL', snoozeMinutes: 10 });
+  const defaultSettings = () => ({ targetLow: 70, targetHigh: 180, glucoseUnit: 'mg/dL', snoozeMinutes: 10, missedReminderMinutes: 30, missedAppointmentMinutes: 60 });
   const now = new Date();
   let pills = safeLoad(KEYS.pills, []), doses = safeLoad(KEYS.doses, []), glucose = safeLoad(KEYS.glucose, []), settings = { ...defaultSettings(), ...safeLoad(KEYS.settings, {}) };
   let currentPage = 'today',
@@ -53,6 +53,7 @@
       return false;
     }
     appointments = nextAppointments;
+    scheduleMissedRefresh();
     return true;
   }
 
@@ -80,13 +81,82 @@
     return APPOINTMENT_REMINDER_OPTIONS.filter(option => selected.includes(option.minutes)).map(option => option.label);
   }
 
+  const APPOINTMENT_GRACE_MS = 60 * 60000; // an appointment stays "upcoming" for an hour after it starts
+  const APPOINTMENT_LABELS = { scheduled: 'Scheduled', 'needs-review': 'Needs review', completed: 'Completed', missed: 'Missed', canceled: 'Canceled' };
+
+  function validAppointments() {
+    return appointments
+      .filter(item => item && typeof item.id === 'string' && Number.isFinite(parseLocal(item.at).getTime()))
+      .sort((a, b) => parseLocal(a.at) - parseLocal(b.at));
+  }
+  function appointmentState(item, nowMs = Date.now()) {
+    if (FINISHED_APPOINTMENT_STATUSES.has(item.status)) return item.status;
+    return parseLocal(item.at).getTime() < nowMs - APPOINTMENT_GRACE_MS ? 'needs-review' : 'scheduled';
+  }
+  function splitAppointments(nowMs = Date.now()) {
+    const sorted = validAppointments();
+    const upcoming = sorted.filter(item => { const s = appointmentState(item, nowMs); return s === 'scheduled'; });
+    const archived = sorted.filter(item => appointmentState(item, nowMs) !== 'scheduled').reverse();
+    return { sorted, upcoming, archived };
+  }
+
+  function appointmentCardHtml(item, nowMs) {
+    const date = parseLocal(item.at);
+    const finished = FINISHED_APPOINTMENT_STATUSES.has(item.status);
+    const status = appointmentState(item, nowMs);
+    const details = [item.provider, item.type, item.visitFormat].filter(Boolean).join(' · ');
+    const reminderLabels = appointmentReminderLabels(item);
+    return `
+      <article class="appointment-card card">
+        <div class="appointment-date-badge" aria-hidden="true">
+          <span class="appointment-date-month">${esc(fmtDate(date, { month: 'short' }))}</span>
+          <strong>${date.getDate()}</strong>
+          <span class="appointment-date-weekday">${esc(fmtDate(date, { weekday: 'short' }))}</span>
+        </div>
+        <div class="appointment-card-content">
+          <h2>${esc(item.title)}</h2>
+          <p class="appointment-time">
+            <span class="appointment-date-accessible">${esc(fmtDate(date, { month: 'long', day: 'numeric', year: 'numeric' }))} at</span>
+            ${esc(fmtTime(String(item.at).slice(11, 16)))}
+          </p>
+          ${details ? `<p class="appointment-detail">${esc(details)}</p>` : ''}
+          ${item.location ? `<p class="appointment-detail">${esc(item.location)}</p>` : ''}
+          ${reminderLabels.length && !finished ? `<p class="appointment-detail">🔔 ${esc(reminderLabels.join(', '))}</p>` : ''}
+          ${item.notes ? `<p class="appointment-detail appointment-notes">${esc(item.notes)}</p>` : ''}
+          <span class="appointment-state ${status}">${APPOINTMENT_LABELS[status]}</span>
+        </div>
+        <div class="appointment-card-actions">
+          <button type="button" class="appointment-edit-button" data-edit-appointment="${esc(item.id)}" aria-label="Edit ${esc(item.title)}">Edit</button>
+          <select class="appointment-status-menu" data-appointment-status="${esc(item.id)}" aria-label="Change status for ${esc(item.title)}">
+            <option value="">Status</option>
+            <option value="completed">Completed</option>
+            <option value="missed">Missed</option>
+            <option value="canceled">Canceled</option>
+            ${finished ? '<option value="scheduled">Mark scheduled</option>' : ''}
+            <option value="reschedule">Reschedule</option>
+          </select>
+        </div>
+      </article>`;
+  }
+
+  function bindAppointmentCards(root) {
+    root.querySelectorAll('[data-edit-appointment]').forEach(button => { button.onclick = () => openAppointmentModal(button.dataset.editAppointment); });
+    root.querySelectorAll('[data-appointment-status]').forEach(menu => {
+      menu.onchange = () => {
+        const id = menu.dataset.appointmentStatus, action = menu.value;
+        menu.value = '';
+        if (!action) return;
+        if (action === 'reschedule') { openRescheduleAppointmentModal(id); return; }
+        setAppointmentStatus(id, action);
+      };
+    });
+  }
+
   function renderAppointments() {
     const list = $('#appointment-list');
     if (!list) return;
-
-    const sorted = [...appointments]
-      .filter(item => item && typeof item.id === 'string' && Number.isFinite(parseLocal(item.at).getTime()))
-      .sort((a, b) => parseLocal(a.at) - parseLocal(b.at));
+    const nowMs = Date.now();
+    const { sorted, upcoming, archived } = splitAppointments(nowMs);
 
     if (!sorted.length) {
       list.innerHTML = `
@@ -95,101 +165,43 @@
           <h3>No appointments yet</h3>
           <p>Add a visit or checkup to keep its details together and get reminders before it starts.</p>
           <button type="button" class="primary-button" id="empty-add-appointment">Add appointment</button>
-        </div>
-      `;
+        </div>`;
       $('#empty-add-appointment').onclick = () => openAppointmentModal();
       return;
     }
 
-    const nowMs = Date.now();
-
-    const upcoming = sorted.filter(item => !FINISHED_APPOINTMENT_STATUSES.has(item.status) && parseLocal(item.at).getTime() >= nowMs);
-    const history = sorted
-      .filter(item => FINISHED_APPOINTMENT_STATUSES.has(item.status) || parseLocal(item.at).getTime() < nowMs)
-      .reverse();
-
-    function card(item) {
-      const date = parseLocal(item.at);
-      const finished = FINISHED_APPOINTMENT_STATUSES.has(item.status);
-      const status = finished ? item.status : date.getTime() < nowMs ? 'needs-review' : 'scheduled';
-
-      const labels = { scheduled: 'Scheduled', 'needs-review': 'Needs review', completed: 'Completed', missed: 'Missed', canceled: 'Canceled' };
-      const details = [item.provider, item.type, item.visitFormat].filter(Boolean).join(' · ');
-      const reminderLabels = appointmentReminderLabels(item);
-
-      return `
-        <article class="appointment-card card">
-          <div class="appointment-date-badge" aria-hidden="true">
-            <span class="appointment-date-month">${esc(fmtDate(date, { month: 'short' }))}</span>
-            <strong>${date.getDate()}</strong>
-            <span class="appointment-date-weekday">${esc(fmtDate(date, { weekday: 'short' }))}</span>
-          </div>
-
-          <div class="appointment-card-content">
-            <h2>${esc(item.title)}</h2>
-
-            <p class="appointment-time">
-              <span class="appointment-date-accessible">${esc(fmtDate(date, { month: 'long', day: 'numeric', year: 'numeric' }))} at</span>
-              ${esc(fmtTime(String(item.at).slice(11, 16)))}
-            </p>
-
-            ${details ? `<p class="appointment-detail">${esc(details)}</p>` : ''}
-            ${item.location ? `<p class="appointment-detail">${esc(item.location)}</p>` : ''}
-            ${reminderLabels.length && !finished ? `<p class="appointment-detail">🔔 ${esc(reminderLabels.join(', '))}</p>` : ''}
-            ${item.notes ? `<p class="appointment-detail appointment-notes">${esc(item.notes)}</p>` : ''}
-
-            <span class="appointment-state ${status}">${labels[status]}</span>
-          </div>
-
-          <div class="appointment-card-actions">
-            <button type="button" class="appointment-edit-button" data-edit-appointment="${esc(item.id)}" aria-label="Edit ${esc(item.title)}">Edit</button>
-
-            <select class="appointment-status-menu" data-appointment-status="${esc(item.id)}" aria-label="Change status for ${esc(item.title)}">
-              <option value="">Status</option>
-              <option value="completed">Completed</option>
-              <option value="missed">Missed</option>
-              <option value="canceled">Canceled</option>
-              ${finished ? '<option value="scheduled">Mark scheduled</option>' : ''}
-              <option value="reschedule">Reschedule</option>
-            </select>
-          </div>
-        </article>
-      `;
-    }
-
+    const review = archived.filter(item => appointmentState(item, nowMs) === 'needs-review').length;
     list.innerHTML = `
-      ${upcoming.length ? `
-        <h2 class="appointment-group-title">Upcoming</h2>
-        ${upcoming.map(card).join('')}
-      ` : `<p class="muted">No upcoming appointments.</p>`}
+      ${upcoming.length ? `<h2 class="appointment-group-title">Upcoming</h2>${upcoming.map(item => appointmentCardHtml(item, nowMs)).join('')}` : '<p class="muted">No upcoming appointments.</p>'}
+      ${archived.length ? `
+        <button type="button" class="quick-action archive-button" id="open-appointment-archive">
+          <span class="quick-icon history-icon" aria-hidden="true">🗄</span>
+          <span><strong>Archive</strong><small>${plural(archived.length, 'past appointment')}${review ? ` · ${review} need${review === 1 ? 's' : ''} review` : ''}</small></span>
+          <span class="chevron">›</span>
+        </button>` : ''}`;
+    bindAppointmentCards(list);
+    const archiveButton = $('#open-appointment-archive');
+    if (archiveButton) archiveButton.onclick = openAppointmentArchive;
+  }
 
-      ${history.length ? `
-        <h2 class="appointment-group-title">History</h2>
-        ${history.map(card).join('')}
-      ` : ''}
-    `;
+  function openAppointmentArchive() {
+    const nowMs = Date.now();
+    const { archived } = splitAppointments(nowMs);
+    openModal(`
+      <div class="modal-head"><h2 id="modal-title">Appointment archive</h2><button class="close-modal" data-close aria-label="Close archive">×</button></div>
+      <p class="modal-intro">Past, completed, missed and canceled appointments. Newest first.</p>
+      <div id="appointment-archive-list" class="appointment-list">
+        ${archived.length ? archived.map(item => appointmentCardHtml(item, nowMs)).join('') : '<p class="muted">Nothing in the archive.</p>'}
+      </div>
+      <div class="modal-actions"><button type="button" class="secondary-button" data-close>Close</button></div>`);
+    bindAppointmentCards($('#appointment-archive-list'));
+  }
 
-    list.querySelectorAll('[data-edit-appointment]').forEach(button => {
-      button.onclick = () => openAppointmentModal(button.dataset.editAppointment);
-    });
-
-    list.querySelectorAll('[data-appointment-status]').forEach(menu => {
-      menu.onchange = () => {
-        const id = menu.dataset.appointmentStatus;
-        const action = menu.value;
-
-        // Reset the action menu before opening another modal.
-        menu.value = '';
-        if (!action) return;
-
-        if (action === 'reschedule') {
-          openRescheduleAppointmentModal(id);
-          return;
-        }
-
-        setAppointmentStatus(id, action);
-      };
-    });
+  // Re-draws every place appointments appear.
+  function refreshAppointmentViews() {
+    if (currentPage === 'appointments') renderAppointments();
+    if (currentPage === 'today') renderToday();
+    if ($('#appointment-archive-list')) openAppointmentArchive();
   }
 
   function setAppointmentStatus(id, status) {
@@ -206,7 +218,7 @@
 
     if (!saveAppointments(nextAppointments)) return;
 
-    renderAppointments();
+    refreshAppointmentViews();
     toast(`Appointment marked ${labels[status].toLowerCase()}.`);
 
     // Finished appointments lose their reminders; reopened ones get them back.
@@ -304,7 +316,7 @@
       if (!saveAppointments(nextAppointments)) return;
 
       closeModal();
-      renderAppointments();
+      refreshAppointmentViews();
 
       let result = null;
       try { result = await applyAppointmentReminders(updated); }
@@ -428,7 +440,7 @@
             if (!saveAppointments(nextAppointments)) return;
 
             Notify.cancelAppointment(old).catch(() => {});
-            renderAppointments();
+            refreshAppointmentViews();
             toast('Appointment deleted.');
           }
         );
@@ -482,7 +494,7 @@
       if (!saveAppointments(nextAppointments)) return;
 
       closeModal();
-      renderAppointments();
+      refreshAppointmentViews();
 
       let result = null;
       try { result = await applyAppointmentReminders(updated); }
@@ -495,13 +507,108 @@
   function returnFromAppointments() {
     closeModal();
 
-    if (currentPage === 'appointments') {
+    if (currentPage === 'appointments' || currentPage === 'allergens') {
       pageHistory.pop();
       const previousPage = pageHistory[pageHistory.length - 1] || 'today';
       go(previousPage, { fromBack: true });
     }
 
     openMoreModal();
+  }
+
+  /* ====================== Allergens ====================== */
+
+  const ALLERGEN_TYPES = ['Medication', 'Food', 'Environmental', 'Insect', 'Latex', 'Other'];
+  const ALLERGEN_SEVERITIES = ['Mild', 'Moderate', 'Severe', 'Life-threatening'];
+  const severityRank = value => { const i = ALLERGEN_SEVERITIES.indexOf(value); return i < 0 ? -1 : i; };
+  const severityClass = value => `sev-${String(value || 'unknown').toLowerCase().replace(/[^a-z]+/g, '-')}`;
+
+  let allergens = safeLoad(KEYS.allergens, []);
+  if (!Array.isArray(allergens)) allergens = [];
+
+  function saveAllergens(next) {
+    try { localStorage.setItem(KEYS.allergens, JSON.stringify(next)); }
+    catch (error) { console.error(error); toast('Could not save allergens. Check device storage.'); return false; }
+    allergens = next;
+    return true;
+  }
+  function sortedAllergens() {
+    return allergens.filter(a => a && typeof a.id === 'string' && a.name)
+      .sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || a.name.localeCompare(b.name));
+  }
+  function refreshAllergenViews() {
+    if (currentPage === 'allergens') renderAllergens();
+    renderAllergenWidget();
+  }
+
+  function renderAllergens() {
+    const list = $('#allergen-list');
+    if (!list) return;
+    const items = sortedAllergens();
+    const count = $('#allergen-count');
+    if (count) count.textContent = items.length ? `${plural(items.length, 'allergen')} recorded` : 'Keep your allergies in one place.';
+    if (!items.length) {
+      list.innerHTML = `<div class="empty-state"><div class="empty-icon" aria-hidden="true">⚠️</div><h3>No allergens recorded</h3><p>Add allergies and sensitivities so they are easy to find and share with your care team.</p><button type="button" class="primary-button" id="empty-add-allergen">Add allergen</button></div>`;
+      $('#empty-add-allergen').onclick = () => openAllergenModal();
+      return;
+    }
+    list.innerHTML = items.map(a => `
+      <article class="allergen-card card ${severityClass(a.severity)}">
+        <div class="allergen-card-main">
+          <h2>${esc(a.name)}</h2>
+          <p class="allergen-meta"><span class="allergen-badge ${severityClass(a.severity)}">${esc(a.severity || 'Severity unknown')}</span>${a.type ? ` <span>${esc(a.type)}</span>` : ''}</p>
+          ${a.reaction ? `<p class="allergen-detail"><strong>Reaction:</strong> ${esc(a.reaction)}</p>` : ''}
+          ${a.notes ? `<p class="allergen-detail appointment-notes">${esc(a.notes)}</p>` : ''}
+        </div>
+        <button type="button" class="appointment-edit-button" data-edit-allergen="${esc(a.id)}" aria-label="Edit ${esc(a.name)}">Edit</button>
+      </article>`).join('');
+    list.querySelectorAll('[data-edit-allergen]').forEach(b => b.onclick = () => openAllergenModal(b.dataset.editAllergen));
+  }
+
+  function renderAllergenWidget() {
+    const root = $('#allergen-widget');
+    if (!root) return;
+    const items = sortedAllergens();
+    const shown = items.slice(0, 8);
+    root.innerHTML = `
+      <div class="allergen-widget-head"><div><p class="eyebrow">ALLERGENS</p><h2>${items.length ? plural(items.length, 'allergen') : 'No allergens recorded'}</h2></div><button type="button" class="text-button" id="allergen-widget-manage">${items.length ? 'Manage' : 'Add'}</button></div>
+      ${items.length ? `<div class="allergen-chips">${shown.map(a => `<span class="allergen-chip ${severityClass(a.severity)}" title="${esc([a.severity, a.reaction].filter(Boolean).join(' · '))}">${esc(a.name)}</span>`).join('')}${items.length > shown.length ? `<span class="allergen-chip more">+${items.length - shown.length} more</span>` : ''}</div>` : '<p class="muted">Add allergies so they are always one glance away.</p>'}`;
+    $('#allergen-widget-manage').onclick = () => items.length ? go('allergens') : openAllergenModal();
+  }
+
+  function openAllergenModal(id = null) {
+    const old = allergens.find(a => a.id === id);
+    if (id && !old) { toast('This allergen is no longer available.'); return; }
+    const a = old || { name: '', type: 'Medication', severity: 'Moderate', reaction: '', notes: '' };
+    openModal(`
+      <div class="modal-head"><h2 id="modal-title">${old ? 'Edit allergen' : 'Add allergen'}</h2><button class="close-modal" data-close aria-label="Close">×</button></div>
+      <form id="allergen-form" class="modal-form">
+        <label class="field"><span>Allergen <b>*</b></span><input id="allergen-name" type="text" maxlength="100" required placeholder="e.g., Penicillin, peanuts" value="${esc(a.name)}"></label>
+        <div class="modal-grid">
+          <label class="field"><span>Type</span><select id="allergen-type">${ALLERGEN_TYPES.map(t => `<option ${a.type === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
+          <label class="field"><span>Severity</span><select id="allergen-severity">${ALLERGEN_SEVERITIES.map(t => `<option ${a.severity === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
+        </div>
+        <label class="field"><span>Reaction <small>Optional</small></span><input id="allergen-reaction" type="text" maxlength="200" placeholder="e.g., hives, swelling" value="${esc(a.reaction || '')}"></label>
+        <label class="field"><span>Notes <small>Optional</small></span><textarea id="allergen-notes" rows="3" maxlength="500">${esc(a.notes || '')}</textarea></label>
+        <p class="modal-note">This is your own record. Always tell your care team about allergies; it does not replace medical advice.</p>
+        <div class="modal-actions"><button type="button" class="secondary-button" data-close>Cancel</button><button type="submit" class="primary-button">${old ? 'Save changes' : 'Save allergen'}</button></div>
+        ${old ? '<button type="button" class="appointment-delete-button" id="delete-allergen">Delete allergen</button>' : ''}
+      </form>`);
+    const del = $('#delete-allergen');
+    if (del) del.onclick = () => confirmAction('Delete allergen?', `This removes "${old.name}" from this device.`, () => {
+      if (!saveAllergens(allergens.filter(x => x.id !== old.id))) return;
+      refreshAllergenViews(); toast('Allergen deleted.');
+    });
+    $('#allergen-form').onsubmit = event => {
+      event.preventDefault();
+      const name = $('#allergen-name').value.trim();
+      if (!name) { toast('Enter an allergen name.'); return; }
+      if (allergens.some(x => x.id !== old?.id && x.name.toLowerCase() === name.toLowerCase())) { toast(`${name} is already in your list.`); return; }
+      const updated = { ...old, id: old?.id || uid('allergen'), name, type: $('#allergen-type').value, severity: $('#allergen-severity').value, reaction: $('#allergen-reaction').value.trim(), notes: $('#allergen-notes').value.trim(), createdAt: old?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
+      const next = old ? allergens.map(x => x.id === old.id ? updated : x) : [...allergens, updated];
+      if (!saveAllergens(next)) return;
+      closeModal(); refreshAllergenViews(); toast(old ? 'Allergen updated.' : 'Allergen saved.');
+    };
   }
 
   /* ====================== Navigation & helpers ====================== */
@@ -675,6 +782,7 @@
 
     renderToday();
     if (currentPage === 'pills') renderPills();
+    scheduleMissedRefresh();
     toast((status === 'taken' ? 'Dose marked as taken.' : status === 'skipped' ? 'Dose skipped.' : 'Dose updated.') + warning);
     return true;
   }
@@ -757,8 +865,37 @@
     return parts.join(' · ');
   }
 
+  function todayAppointments() {
+    const key = dateKey();
+    return validAppointments().filter(item => String(item.at).slice(0, 10) === key);
+  }
+
+  function nextAppointmentText() {
+    const nowMs = Date.now();
+    const next = validAppointments().find(item => !FINISHED_APPOINTMENT_STATUSES.has(item.status) && parseLocal(item.at).getTime() >= nowMs - APPOINTMENT_GRACE_MS && parseLocal(item.at).getTime() < nowMs + 14 * 86400000);
+    if (!next) return '';
+    const date = parseLocal(next.at);
+    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+    const when = dateKey(date) === dateKey() ? 'today' : dateKey(date) === dateKey(tomorrow) ? 'tomorrow' : fmtDate(date, { weekday: 'short', month: 'short', day: 'numeric' });
+    return `Next appointment: ${next.title}, ${when} at ${fmtTime(String(next.at).slice(11, 16))}.`;
+  }
+
+  function appointmentTodayCardHtml(item) {
+    const state = appointmentState(item);
+    const start = parseLocal(item.at).getTime();
+    const soon = state === 'scheduled' && Math.abs(start - Date.now()) <= 30 * 60000;
+    const cls = state === 'completed' ? 'taken' : state === 'canceled' ? 'skipped' : state === 'missed' || state === 'needs-review' ? 'missed' : soon ? 'due' : 'upcoming';
+    const label = soon ? 'Starting soon' : APPOINTMENT_LABELS[state];
+    const detail = [item.provider, item.location].filter(Boolean).join(' · ') || item.type || 'Appointment';
+    return `<article class="dose-card appointment-today" style="--pill-color:var(--accent)">
+      <div class="dose-time">${esc(fmtTime(String(item.at).slice(11, 16)))}</div><div class="dose-rail"></div>
+      <div class="dose-main"><h3>📅 ${esc(item.title)}</h3><p>${esc(detail)}</p><span class="dose-status ${cls}">${esc(label)}</span></div>
+      <div class="dose-actions"><button type="button" class="mini-action" data-open-appointments>View</button></div>
+    </article>`;
+  }
+
   function renderToday() {
-    const list = $('#today-dose-list'); const all = todayDoses();
+    const list = $('#today-dose-list'); const all = todayDoses(); const appts = todayAppointments();
     const completed = all.filter(d => d.status === 'taken').length;
     const remaining = all.filter(d => !['taken', 'skipped'].includes(d.status)).length;
     const pct = all.length ? Math.round(completed / all.length * 100) : 0;
@@ -775,33 +912,44 @@
     $('#progress-bar').style.width = `${pct}%`;
     $('#stat-scheduled').textContent = all.length; $('#stat-taken').textContent = completed; $('#stat-remaining').textContent = remaining;
 
-    if (!all.length) {
-      list.innerHTML = `<div class="empty-state"><div class="empty-icon">＋</div><h3>${pills.some(p => p.active) ? 'Nothing scheduled today' : 'Stay on top of your medications'}</h3><p>${pills.some(p => p.active) ? 'You have no active medication doses scheduled for today.' : 'Add your first medication to build today’s schedule and receive reminders on Android.'}</p><button class="primary-button" id="empty-add-pill">Add medication</button></div>`;
+    if (!all.length && !appts.length) {
+      list.innerHTML = `<div class="empty-state"><div class="empty-icon">＋</div><h3>${pills.some(p => p.active) ? 'Nothing scheduled today' : 'Stay on top of your medications'}</h3><p>${pills.some(p => p.active) ? 'You have no active medication doses or appointments scheduled for today.' : 'Add your first medication to build today’s schedule and receive reminders on Android.'}</p><button class="primary-button" id="empty-add-pill">Add medication</button></div>`;
       $('#empty-add-pill').onclick = () => openPillModal();
     } else {
-      list.innerHTML = all.map(d => {
-        const p = d.pill, s = doseStatus(d), taken = s === 'taken', final = ['taken', 'skipped'].includes(s);
-        const detail = doseDetailLine(d);
-        return `<article class="dose-card ${highlightPillId === p.id ? 'dose-highlight' : ''}" style="--pill-color:${esc(p.color || COLORS[0])}" id="dose-${esc(d.id)}">
-          <div class="dose-time">${esc(fmtTime(doseTimeOf(d)))}</div><div class="dose-rail"></div>
-          <div class="dose-main"><h3>${esc(p.name)}</h3><p>${esc(p.dosage || p.form || 'Medication')}${p.notes ? ` · ${esc(p.notes)}` : ''}</p>
-            <span class="dose-status ${esc(s)}">${esc(doseLabel(s))}${taken && d.takenAt ? ` · ${esc(fmtTime(d.takenAt.slice(11, 16)))}` : ''}</span>
-            ${detail ? `<p class="dose-note">${esc(detail)}</p>` : ''}
-            <div class="dose-sub-actions"><button type="button" class="mini-action" data-dose-note="${esc(d.id)}">${d.note ? 'Edit note' : 'Add note'}</button></div>
-          </div>
-          <div class="dose-actions">${final ? `<button class="take-button done" data-dose-action="undo" data-id="${esc(d.id)}">Undo</button>` : `<button class="take-button" data-dose-action="taken" data-id="${esc(d.id)}">Mark taken</button><button class="mini-action" data-dose-action="skipped" data-id="${esc(d.id)}">Skip</button>`}</div>
-        </article>`;
-      }).join('');
+      const entries = [
+        ...all.map(d => ({ at: getDoseTime(d).getTime(), html: doseCardHtml(d) })),
+        ...appts.map(a => ({ at: parseLocal(a.at).getTime(), html: appointmentTodayCardHtml(a) })),
+      ].sort((a, b) => a.at - b.at);
+      list.innerHTML = entries.map(e => e.html).join('');
       list.querySelectorAll('[data-dose-action]').forEach(btn => btn.onclick = () => {
         const status = btn.dataset.doseAction, id = btn.dataset.id;
         if (status === 'skipped') openSkipDoseModal(id);
         else updateDose(id, status === 'undo' ? 'pending' : status);
       });
       list.querySelectorAll('[data-dose-note]').forEach(btn => btn.onclick = () => openDoseNoteModal(btn.dataset.doseNote));
+      list.querySelectorAll('[data-open-appointments]').forEach(btn => btn.onclick = () => go('appointments'));
     }
+
     const next = all.find(d => !['taken', 'skipped'].includes(doseStatus(d)));
-    $('#daily-insight').textContent = !pills.length ? 'Add a medication to build your daily schedule.' : !all.length ? 'You have no scheduled doses today. Your medication list is available any time.' : !next ? 'You completed all scheduled doses for today.' : `Your next dose is ${next.pill.name} at ${fmtTime(doseTimeOf(next))}.`;
+    const apptText = nextAppointmentText();
+    const doseText = !pills.length ? 'Add a medication to build your daily schedule.' : !all.length ? 'You have no scheduled doses today. Your medication list is available any time.' : !next ? 'You completed all scheduled doses for today.' : `Your next dose is ${next.pill.name} at ${fmtTime(doseTimeOf(next))}.`;
+    $('#daily-insight').textContent = !pills.length && apptText ? apptText : [doseText, apptText].filter(Boolean).join(' ');
     highlightPillId = null;
+    renderAllergenWidget();
+  }
+
+  function doseCardHtml(d) {
+    const p = d.pill, s = doseStatus(d), taken = s === 'taken', final = ['taken', 'skipped'].includes(s);
+    const detail = doseDetailLine(d);
+    return `<article class="dose-card ${highlightPillId === p.id ? 'dose-highlight' : ''}" style="--pill-color:${esc(p.color || COLORS[0])}" id="dose-${esc(d.id)}">
+      <div class="dose-time">${esc(fmtTime(doseTimeOf(d)))}</div><div class="dose-rail"></div>
+      <div class="dose-main"><h3>${esc(p.name)}</h3><p>${esc(p.dosage || p.form || 'Medication')}${p.notes ? ` · ${esc(p.notes)}` : ''}</p>
+        <span class="dose-status ${esc(s)}">${esc(doseLabel(s))}${taken && d.takenAt ? ` · ${esc(fmtTime(d.takenAt.slice(11, 16)))}` : ''}</span>
+        ${detail ? `<p class="dose-note">${esc(detail)}</p>` : ''}
+        <div class="dose-sub-actions"><button type="button" class="mini-action" data-dose-note="${esc(d.id)}">${d.note ? 'Edit note' : 'Add note'}</button></div>
+      </div>
+      <div class="dose-actions">${final ? `<button class="take-button done" data-dose-action="undo" data-id="${esc(d.id)}">Undo</button>` : `<button class="take-button" data-dose-action="taken" data-id="${esc(d.id)}">Mark taken</button><button class="mini-action" data-dose-action="skipped" data-id="${esc(d.id)}">Skip</button>`}</div>
+    </article>`;
   }
 
   /* ====================== Medications ====================== */
@@ -847,6 +995,7 @@
     save(KEYS.pills, pills);
     ensureDoseRecords();
     render();
+    scheduleMissedRefresh();
     if (updated.active) {
       let result = null;
       try { result = await Notify.schedulePill(updated); } catch (error) { console.error(error); }
@@ -1045,7 +1194,7 @@
     pills = pills.filter(x => x.id !== id);
     doses = doses.filter(d => d.pillId !== id);
     save(KEYS.pills, pills); save(KEYS.doses, doses);
-    render(); toast('Medication deleted.');
+    render(); scheduleMissedRefresh(); toast('Medication deleted.');
   }
 
   /* ====================== Modals & settings ====================== */
@@ -1078,8 +1227,10 @@
       <div class="modal-head"><h2 id="modal-title">More</h2><button class="close-modal" data-close aria-label="Close More">×</button></div>
       <div class="settings-card settings-actions vertical">
         <button type="button" class="settings-link" id="open-appointments"><span><strong>📅 Appointments</strong><small>Visits, checkups and reminders</small></span><b aria-hidden="true">›</b></button>
+        <button type="button" class="settings-link" id="open-allergens"><span><strong>⚠️ Allergens</strong><small>Allergies and sensitivities</small></span><b aria-hidden="true">›</b></button>
       </div>`);
     $('#open-appointments').onclick = () => { closeModal(); go('appointments'); };
+    $('#open-allergens').onclick = () => { closeModal(); go('allergens'); };
   }
 
   function openModal(html) {
@@ -1161,7 +1312,7 @@
       };
       if (old) await Notify.cancelPill(old);
       if (old) pills = pills.map(x => x.id === old.id ? updated : x); else pills.push(updated);
-      save(KEYS.pills, pills); ensureDoseRecords(); closeModal(); render();
+      save(KEYS.pills, pills); ensureDoseRecords(); closeModal(); render(); scheduleMissedRefresh();
       const result = await Notify.schedulePill(updated);
       if (updated.active && updated.schedule !== 'asNeeded' && updated.times.length) {
         if (result.supported && result.scheduled) toast(`${old ? 'Medication updated' : 'Medication added'} and ${result.scheduled} reminder(s) scheduled.`);
@@ -1257,6 +1408,7 @@
     try { await Notify.init(); } catch (error) { console.error(error); }
     try { pillResult = await Notify.syncPills(pills); } catch (error) { console.error(error); pillResult = { supported: true, message: 'Reminder sync failed.' }; }
     try { apptResult = await Notify.syncAppointments(appointments, { prompt: false }); } catch (error) { console.error(error); }
+    try { await refreshMissedFollowups(); } catch (error) { console.error(error); }
     if (!quiet) {
       let message = pillResult.message || 'Reminder sync finished.';
       if (pillResult.supported && apptResult.supported && apptResult.scheduled) message += ` ${plural(apptResult.scheduled, 'appointment reminder')} scheduled.`;
@@ -1304,6 +1456,8 @@
       if (!expectedAppts && !summary.appointment) rows.push({ state: 'info', label: 'Appointment reminders', detail: 'None waiting.' });
       else rows.push(summary.appointment >= expectedAppts ? { state: 'ok', label: 'Appointment reminders', detail: `${summary.appointment} scheduled (${expectedAppts} expected)` } : { state: 'warn', label: 'Appointment reminders', detail: `${summary.appointment} scheduled but ${expectedAppts} expected. Tap Resync reminders.` });
 
+      rows.push({ state: 'info', label: 'Missed-dose follow-ups', detail: missedMinutes() ? `${summary.missed || 0} waiting (${missedMinutes()} min after each dose)` : 'Off' });
+      rows.push({ state: 'info', label: 'Appointment follow-ups', detail: missedApptMinutes() ? `${summary.appointmentMissed || 0} waiting (${missedApptMinutes()} min after the start)` : 'Off' });
       rows.push({ state: 'info', label: 'Snoozed reminders', detail: summary.snooze ? `${summary.snooze} waiting` : 'None waiting' });
     }
     rows.push({ state: 'info', label: 'Battery', detail: 'If reminders are delayed, set Health Ledger to “Unrestricted” in Android battery settings.' });
@@ -1324,10 +1478,16 @@
       <div class="modal-head"><h2 id="modal-title">Reminder health</h2><button class="close-modal" data-close aria-label="Close">×</button></div>
       <p class="modal-intro">Check that Android will actually deliver your reminders.</p>
       <div id="reminder-health-rows" class="health-list" aria-live="polite"><p class="medication-information-note">Checking…</p></div>
+      <label class="field"><span>Follow up on missed doses</span>
+        <select id="missed-minutes">${MISSED_CHOICES.map(m => `<option value="${m}" ${m === missedMinutes() ? 'selected' : ''}>${m ? `${m} minutes after the dose` : 'Off'}</option>`).join('')}</select>
+      </label>
+      <label class="field"><span>Follow up on appointments</span>
+        <select id="missed-appt-minutes">${MISSED_APPT_CHOICES.map(m => `<option value="${m}" ${m === missedApptMinutes() ? 'selected' : ''}>${m ? `${m} minutes after the start` : 'Off'}</option>`).join('')}</select>
+      </label>
       <label class="field"><span>Snooze length</span>
         <select id="snooze-minutes">${SNOOZE_CHOICES.map(m => `<option value="${m}" ${m === snoozeMinutes() ? 'selected' : ''}>${m} minutes</option>`).join('')}</select>
       </label>
-      <p class="modal-note">The Snooze button on a reminder brings it back after this long. On Android the notification buttons open Health Ledger briefly to save your choice.</p>
+      <p class="modal-note">An “Appointment finished?” reminder asks you to mark an unrecorded appointment completed or missed. A follow-up “Missed dose?” reminder is sent if a dose is still unrecorded after the chosen time, and is cancelled once you record it (the app refreshes follow-ups whenever you open it or record a dose). The Snooze button on a reminder brings it back after this long. On Android the notification buttons open Health Ledger briefly to save your choice.</p>
       <div class="health-actions">
         <button type="button" class="primary-button" id="health-test">Send test reminder</button>
         <button type="button" class="secondary-button" id="health-resync">Resync reminders</button>
@@ -1342,6 +1502,8 @@
     }
     refresh();
     $('#snooze-minutes').onchange = () => { settings.snoozeMinutes = Number($('#snooze-minutes').value); save(KEYS.settings, settings); toast(`Snooze set to ${snoozeMinutes()} minutes.`); };
+    $('#missed-minutes').onchange = async () => { settings.missedReminderMinutes = Number($('#missed-minutes').value); save(KEYS.settings, settings); try { await refreshMissedFollowups(); } catch (error) { console.error(error); } toast(missedMinutes() ? `Missed-dose follow-ups set to ${missedMinutes()} minutes.` : 'Missed-dose follow-ups turned off.'); refresh(); };
+    $('#missed-appt-minutes').onchange = async () => { settings.missedAppointmentMinutes = Number($('#missed-appt-minutes').value); save(KEYS.settings, settings); try { await refreshMissedFollowups(); } catch (error) { console.error(error); } toast(missedApptMinutes() ? `Appointment follow-ups set to ${missedApptMinutes()} minutes after the start.` : 'Appointment follow-ups turned off.'); refresh(); };
     $('#health-refresh').onclick = refresh;
     $('#health-back').onclick = openSettingsModal;
     $('#health-resync').onclick = async () => { const b = $('#health-resync'); b.disabled = true; await syncNotifications(); b.disabled = false; refresh(); };
@@ -1362,8 +1524,9 @@
 
   /* ---- Notification taps and action buttons ---- */
 
-  function findDoseForNotification(pill, time, doseIdHint) {
+  function findDoseForNotification(pill, time, doseIdHint, dateKeyHint) {
     if (doseIdHint) { const direct = doses.find(d => d.id === doseIdHint); if (direct) return direct; }
+    if (dateKeyHint) { const exact = ensureDoseRecord(pill, dateKeyHint, time); if (exact) return exact; }
     const nowDate = new Date();
     const [h, m] = String(time).split(':').map(Number);
     const todayAt = new Date(nowDate); todayAt.setHours(h || 0, m || 0, 0, 0);
@@ -1377,7 +1540,7 @@
   async function handleDoseNotificationAction(extra, actionId) {
     const pill = pills.find(p => p.id === extra.pillId);
     if (!pill) { toast('That medication is no longer in your list.'); return; }
-    const dose = findDoseForNotification(pill, extra.time, extra.doseId);
+    const dose = findDoseForNotification(pill, extra.time, extra.doseId, extra.dateKey);
     if (!dose) { toast('Could not find that dose. Open Today to record it.'); return; }
     if (actionId !== 'snooze' && dose.status !== 'pending') {
       go('today'); renderToday();
@@ -1415,7 +1578,13 @@
   function handleNotificationEvent(notification, actionId = 'tap') {
     const extra = notification?.extra || {};
     if (extra.type === 'test') { markTestConfirmed(); toast('Test reminder received. Reminders are working.'); return; }
-    if (extra.type === 'appointment') { closeModal(); go('appointments'); renderAppointments(); toast('Appointment reminder opened.'); return; }
+    if (extra.type === 'appointment' || extra.type === 'appointment-missed') {
+      closeModal(); go('appointments'); refreshAppointmentViews();
+      const known = appointments.find(item => item.id === extra.appointmentId);
+      if (extra.type === 'appointment-missed' && (actionId === 'completed' || actionId === 'missed') && known) { setAppointmentStatus(known.id, actionId); return; }
+      toast(extra.type === 'appointment-missed' ? 'Update how this appointment went using the Status menu.' : 'Appointment reminder opened.');
+      return;
+    }
     if (extra.type === 'pill-dose' || extra.type === 'pill-snooze' || extra.pillId) {
       if (['taken', 'skip', 'snooze'].includes(actionId)) handleDoseNotificationAction(extra, actionId).catch(error => console.error(error));
       else showDoseFromNotification(extra);
@@ -1432,7 +1601,61 @@
         if (result.supported && !result.errors?.length && result.permission?.granted) localStorage.setItem(KEYS.reminderSchema, REMINDER_SCHEMA);
       }
       await Notify.syncAppointments(appointments, { prompt: false });
+      await refreshMissedFollowups();
     } catch (error) { console.error('Reminder maintenance failed:', error); }
+  }
+
+  /* ====================== Missed-dose follow-ups ====================== */
+
+  const MISSED_CHOICES = [0, 15, 30, 60];
+  function missedMinutes() { const v = Number(settings.missedReminderMinutes); return MISSED_CHOICES.includes(v) ? v : 30; }
+  const MISSED_APPT_CHOICES = [0, 30, 60, 120];
+  function missedApptMinutes() { const v = Number(settings.missedAppointmentMinutes); return MISSED_APPT_CHOICES.includes(v) ? v : 60; }
+  let missedTimer = null;
+
+  // Schedules a "Missed dose?" notification a little after each unrecorded dose
+  // for yesterday through two days ahead. Recording a dose cancels its follow-up
+  // the next time this runs (immediately after any change, and on every launch/resume).
+  async function refreshMissedFollowups() {
+    if (!Notify.isNative()) return { supported: false };
+    const minutes = missedMinutes();
+    const entries = [];
+    const nowMs = Date.now();
+    if (minutes) {
+      for (let offset = -1; offset <= 2; offset += 1) {
+        const date = new Date(); date.setDate(date.getDate() + offset);
+        const key = dateKey(date);
+        for (const pill of pills) {
+          if (!isScheduled(pill, date)) continue;
+          for (const time of pill.times || []) {
+            const at = new Date(parseLocal(`${key}T${time}:00`).getTime() + minutes * 60000);
+            if (at.getTime() <= nowMs + 5000) continue;
+            const record = doses.find(d => d.id === doseId(pill.id, key, time));
+            if (record && record.status !== 'pending') continue;
+            entries.push({ pill, dateKey: key, time, timeLabel: fmtTime(time), at });
+          }
+        }
+      }
+    }
+    entries.sort((a, b) => a.at - b.at);
+    const apptMinutes = missedApptMinutes();
+    const apptEntries = [];
+    if (apptMinutes) {
+      for (const appointment of validAppointments()) {
+        if (FINISHED_APPOINTMENT_STATUSES.has(appointment.status)) continue;
+        const at = new Date(parseLocal(appointment.at).getTime() + apptMinutes * 60000);
+        if (at.getTime() <= nowMs + 5000 || at.getTime() > nowMs + 60 * 86400000) continue;
+        apptEntries.push({ appointment, at });
+      }
+    }
+    const apptResult = await Notify.syncMissedAppointments(apptEntries.slice(0, 50));
+    const doseResult = await Notify.syncMissedFollowups(entries.slice(0, 100), minutes);
+    return { ...doseResult, appointments: apptResult };
+  }
+  function scheduleMissedRefresh() {
+    if (!Notify.isNative()) return;
+    clearTimeout(missedTimer);
+    missedTimer = setTimeout(() => refreshMissedFollowups().catch(error => console.error('Missed follow-ups failed:', error)), 400);
   }
 
   /* ====================== Adherence ====================== */
@@ -1531,17 +1754,17 @@
   /* ====================== Backups ====================== */
 
   const BACKUP_VERSION = '1.1.0';
-  function countsOf(source) { return { pills: source.pills.length, doses: source.doses.length, glucose: source.glucose.length, appointments: source.appointments.length }; }
+  function countsOf(source) { return { pills: source.pills.length, doses: source.doses.length, glucose: source.glucose.length, appointments: source.appointments.length, allergens: (source.allergens || []).length }; }
 
   function buildBackup() {
     return {
       app: 'Health Ledger', version: BACKUP_VERSION, schema: 2, exportedAt: new Date().toISOString(),
-      pills, doses, glucose, appointments, settings, theme: localStorage.getItem(KEYS.theme) || 'system',
+      pills, doses, glucose, appointments, allergens, settings, theme: localStorage.getItem(KEYS.theme) || 'system',
     };
   }
 
   function recordBackup(fileName) {
-    save(KEYS.lastBackup, { at: new Date().toISOString(), fileName, counts: countsOf({ pills, doses, glucose, appointments }) });
+    save(KEYS.lastBackup, { at: new Date().toISOString(), fileName, counts: countsOf({ pills, doses, glucose, appointments, allergens }) });
     refreshBackupStatus();
   }
 
@@ -1612,7 +1835,7 @@
     try { raw = JSON.parse(text); } catch (_) { return { error: 'That file is not valid JSON, so it cannot be a Health Ledger backup.' }; }
     if (!raw || raw.app !== 'Health Ledger' || !Array.isArray(raw.pills) || !Array.isArray(raw.doses) || !Array.isArray(raw.glucose)) return { error: 'This file is not a Health Ledger backup.' };
 
-    const dropped = { pills: 0, doses: 0, glucose: 0, appointments: 0 };
+    const dropped = { pills: 0, doses: 0, glucose: 0, appointments: 0, allergens: 0 };
     const dedupe = (list, ok, kind) => {
       const seen = new Set(), out = [];
       for (const item of list) {
@@ -1631,15 +1854,20 @@
     const hasAppointments = Array.isArray(raw.appointments);
     const cleanAppointments = hasAppointments ? dedupe(raw.appointments, a => typeof a.title === 'string' && a.title.trim() && validDate(a.at), 'appointments') : [];
 
+    const hasAllergens = Array.isArray(raw.allergens);
+    const cleanAllergens = hasAllergens ? dedupe(raw.allergens, a => typeof a.name === 'string' && a.name.trim(), 'allergens') : [];
+
     const rawSettings = raw.settings && typeof raw.settings === 'object' ? raw.settings : {};
     const merged = { ...defaultSettings() };
     if (Number.isFinite(Number(rawSettings.targetLow)) && Number(rawSettings.targetLow) > 0) merged.targetLow = Number(rawSettings.targetLow);
     if (Number.isFinite(Number(rawSettings.targetHigh)) && Number(rawSettings.targetHigh) > 0) merged.targetHigh = Number(rawSettings.targetHigh);
     if (['mg/dL', 'mmol/L'].includes(rawSettings.glucoseUnit)) merged.glucoseUnit = rawSettings.glucoseUnit;
     if (SNOOZE_CHOICES.includes(Number(rawSettings.snoozeMinutes))) merged.snoozeMinutes = Number(rawSettings.snoozeMinutes);
+    if (rawSettings.missedAppointmentMinutes !== undefined && MISSED_APPT_CHOICES.includes(Number(rawSettings.missedAppointmentMinutes))) merged.missedAppointmentMinutes = Number(rawSettings.missedAppointmentMinutes);
+    if (rawSettings.missedReminderMinutes !== undefined && MISSED_CHOICES.includes(Number(rawSettings.missedReminderMinutes))) merged.missedReminderMinutes = Number(rawSettings.missedReminderMinutes);
 
     return {
-      data: { pills: cleanPills, doses: cleanDoses, glucose: cleanGlucose, appointments: cleanAppointments, hasAppointments, settings: merged, theme: ['system', 'light', 'dark', 'osrs'].includes(raw.theme) ? raw.theme : null },
+      data: { pills: cleanPills, doses: cleanDoses, glucose: cleanGlucose, appointments: cleanAppointments, hasAppointments, allergens: cleanAllergens, hasAllergens, settings: merged, theme: ['system', 'light', 'dark', 'osrs'].includes(raw.theme) ? raw.theme : null },
       info: { exportedAt: validDate(raw.exportedAt) || !Number.isNaN(Date.parse(raw.exportedAt)) ? raw.exportedAt : '', version: raw.version || 'unknown', dropped },
     };
   }
@@ -1654,11 +1882,12 @@
 
   function openImportPreview(parsed, fileName) {
     const { data, info } = parsed;
-    const current = countsOf({ pills, doses, glucose, appointments });
+    const current = countsOf({ pills, doses, glucose, appointments, allergens });
     const incoming = countsOf(data);
     const droppedTotal = Object.values(info.dropped).reduce((a, b) => a + b, 0);
     const warnings = [];
     if (droppedTotal) warnings.push(`${plural(droppedTotal, 'invalid or duplicate record')} will be skipped.`);
+    if (!data.hasAllergens) warnings.push('This backup has no allergens. Your current allergens will be kept.');
     if (!data.hasAppointments) warnings.push('This backup has no appointments (it was made by an older version). Your current appointments will be kept.');
     if (current.pills + current.glucose + current.appointments + current.doses > 0) warnings.push('Restoring replaces the data currently on this device. You can undo it afterwards from Settings.');
     const row = (label, a, b) => `<tr><th scope="row">${esc(label)}</th><td>${a}</td><td>${b}</td></tr>`;
@@ -1669,6 +1898,7 @@
       <table class="import-table"><thead><tr><th></th><th>In backup</th><th>On this device</th></tr></thead><tbody>
         ${row('Medications', incoming.pills, current.pills)}${row('Dose records', incoming.doses, current.doses)}${row('Glucose readings', incoming.glucose, current.glucose)}
         ${row('Appointments', data.hasAppointments ? incoming.appointments : 'not included', current.appointments)}
+        ${row('Allergens', data.hasAllergens ? incoming.allergens : 'not included', current.allergens)}
       </tbody></table>
       <p class="import-range"><span>Dose records:</span> ${esc(rangeText(data.doses.map(d => d.scheduledAt)))}<br><span>Glucose readings:</span> ${esc(rangeText(data.glucose.map(g => g.at)))}</p>
       ${warnings.length ? `<ul class="import-warnings">${warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}
@@ -1677,14 +1907,14 @@
   }
 
   function snapshotCurrent() {
-    return { savedAt: new Date().toISOString(), pills, doses, glucose, appointments, settings, theme: localStorage.getItem(KEYS.theme) || 'system' };
+    return { savedAt: new Date().toISOString(), pills, doses, glucose, appointments, allergens, settings, theme: localStorage.getItem(KEYS.theme) || 'system' };
   }
 
   async function replaceAllData(next) {
     const oldPills = pills, oldAppointments = appointments;
     await Promise.all([...oldPills.map(p => Notify.cancelPill(p).catch(() => {})), ...oldAppointments.map(a => Notify.cancelAppointment(a).catch(() => {}))]);
-    pills = next.pills; doses = next.doses; glucose = next.glucose; appointments = next.appointments; settings = { ...defaultSettings(), ...next.settings };
-    save(KEYS.pills, pills); save(KEYS.doses, doses); save(KEYS.glucose, glucose); save(KEYS.appointments, appointments); save(KEYS.settings, settings);
+    pills = next.pills; doses = next.doses; glucose = next.glucose; appointments = next.appointments; allergens = next.allergens || []; settings = { ...defaultSettings(), ...next.settings };
+    save(KEYS.pills, pills); save(KEYS.doses, doses); save(KEYS.glucose, glucose); save(KEYS.appointments, appointments); save(KEYS.allergens, allergens); save(KEYS.settings, settings);
     if (next.theme) applyTheme(next.theme);
     $('#display-unit').value = settings.glucoseUnit || 'mg/dL';
     ensureDoseRecords();
@@ -1696,10 +1926,10 @@
 
   async function restoreBackup(parsed) {
     const { data, info } = parsed;
-    const before = countsOf({ pills, doses, glucose, appointments });
+    const before = countsOf({ pills, doses, glucose, appointments, allergens });
     let undoSaved = true;
     try { localStorage.setItem(KEYS.preRestore, JSON.stringify(snapshotCurrent())); } catch (_) { undoSaved = false; }
-    const next = { ...data, appointments: data.hasAppointments ? data.appointments : appointments, theme: data.theme };
+    const next = { ...data, appointments: data.hasAppointments ? data.appointments : appointments, allergens: data.hasAllergens ? data.allergens : allergens, theme: data.theme };
     closeModal();
     const sync = await replaceAllData(next);
     const after = countsOf(next);
@@ -1714,6 +1944,7 @@
         <tr><th scope="row">Dose records</th><td>${after.doses}</td><td>${before.doses}</td></tr>
         <tr><th scope="row">Glucose readings</th><td>${after.glucose}</td><td>${before.glucose}</td></tr>
         <tr><th scope="row">Appointments</th><td>${after.appointments}${data.hasAppointments ? '' : ' (kept)'}</td><td>${before.appointments}</td></tr>
+        <tr><th scope="row">Allergens</th><td>${after.allergens}${data.hasAllergens ? '' : ' (kept)'}</td><td>${before.allergens}</td></tr>
       </tbody></table>
       <ul class="import-warnings">
         ${droppedTotal ? `<li>${plural(droppedTotal, 'invalid or duplicate record')} skipped.</li>` : ''}
@@ -1729,7 +1960,7 @@
     const snapshot = safeLoad(KEYS.preRestore, null);
     if (!snapshot) { toast('Nothing to undo.'); return; }
     confirmAction('Undo last restore?', `This puts back the data you had on ${fmtStamp(snapshot.savedAt)}, before the backup was restored.`, async () => {
-      await replaceAllData({ pills: snapshot.pills || [], doses: snapshot.doses || [], glucose: snapshot.glucose || [], appointments: snapshot.appointments || [], settings: snapshot.settings || {}, theme: snapshot.theme });
+      await replaceAllData({ pills: snapshot.pills || [], doses: snapshot.doses || [], glucose: snapshot.glucose || [], appointments: snapshot.appointments || [], allergens: snapshot.allergens || [], settings: snapshot.settings || {}, theme: snapshot.theme });
       localStorage.removeItem(KEYS.preRestore);
       refreshUndoRestore();
       toast('Restore undone.');
@@ -1771,8 +2002,8 @@
     confirmAction('Clear all Health Ledger data?', 'This permanently removes medications, dose history, glucose readings, appointments and preferences stored by this app. Export a backup first if you may need it.', async () => {
       const oldPills = pills, oldAppointments = appointments;
       await Promise.all([...oldPills.map(p => Notify.cancelPill(p).catch(() => {})), ...oldAppointments.map(a => Notify.cancelAppointment(a).catch(() => {}))]);
-      pills = []; doses = []; glucose = []; appointments = []; settings = defaultSettings();
-      [KEYS.pills, KEYS.doses, KEYS.glucose, KEYS.settings, KEYS.onboarding, KEYS.appointments, KEYS.preRestore, KEYS.reminderTest, KEYS.lastBackup].forEach(k => localStorage.removeItem(k));
+      pills = []; doses = []; glucose = []; appointments = []; allergens = []; settings = defaultSettings();
+      [KEYS.pills, KEYS.doses, KEYS.glucose, KEYS.settings, KEYS.onboarding, KEYS.appointments, KEYS.allergens, KEYS.preRestore, KEYS.reminderTest, KEYS.lastBackup].forEach(k => localStorage.removeItem(k));
       save(KEYS.settings, settings);
       refreshBackupStatus(); refreshUndoRestore(); render(); toast('Local records cleared.');
     });
@@ -1839,7 +2070,8 @@
     if (currentPage === 'today') renderToday();
     if (currentPage === 'pills') renderPills();
     if (currentPage === 'glucose') renderGlucose();
-    if (currentPage === 'appointments') renderAppointments();
+    if (currentPage === 'appointments') refreshAppointmentViews();
+    if (currentPage === 'allergens') renderAllergens();
     if (currentPage === 'more') refreshNotificationStatus();
   }
 
@@ -1892,14 +2124,15 @@
   Notify.registerActionListener((notification, actionId) => handleNotificationEvent(notification, actionId));
   Notify.registerReceivedListener(notification => { if (notification?.extra?.type === 'test') { markTestConfirmed(); toast('Test reminder received. Reminders are working.'); } });
   runStartupReminderMaintenance();
-  window.addEventListener('focus', () => { ensureDoseRecords(); renderToday(); });
+  window.addEventListener('focus', () => { ensureDoseRecords(); renderToday(); scheduleMissedRefresh(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { ensureDoseRecords(); if (currentPage === 'today') renderToday(); scheduleMissedRefresh(); } });
 
   function installAndroidBackHandler() {
     const App = window.Capacitor?.Plugins?.App;
     if (!App?.addListener) return;
     App.addListener('backButton', async () => {
       if (document.querySelector('#modal-root .modal-backdrop')) { closeModal(); return; }
-      if (currentPage === 'appointments') { returnFromAppointments(); return; }
+      if (currentPage === 'appointments' || currentPage === 'allergens') { returnFromAppointments(); return; }
       if (pageHistory.length > 1) { pageHistory.pop(); go(pageHistory[pageHistory.length - 1], { fromBack: true }); return; }
       const pressedAt = Date.now();
       if (pressedAt - lastBackPressAt < 2000) { await App.exitApp(); return; }
@@ -1910,5 +2143,7 @@
 
   $('#add-appointment').onclick = () => openAppointmentModal();
   $('#appointments-back').onclick = returnFromAppointments;
+  $('#allergens-back').onclick = returnFromAppointments;
+  $('#add-allergen').onclick = () => openAllergenModal();
   installAndroidBackHandler();
 })();
