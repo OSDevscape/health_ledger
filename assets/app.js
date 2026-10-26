@@ -1383,7 +1383,7 @@
     root.innerHTML = `<div class="modal-backdrop" role="presentation"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">${html}</section></div>`;
     const backdrop = root.querySelector('.modal-backdrop');
     enableModalSwipe(root.querySelector('.modal'));
-    backdrop.:('click', e => { if (e.target === backdrop) closeModal(); });
+    backdrop.addEventListener('click', e => { if (e.target === backdrop) closeModal(); });
     root.querySelectorAll('[data-close]').forEach(b => b.onclick = closeModal);
     const first = root.querySelector('input,button,select,textarea');
     if (first) setTimeout(() => first.focus(), 20);
