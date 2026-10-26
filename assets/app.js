@@ -1232,13 +1232,158 @@
     $('#open-appointments').onclick = () => { closeModal(); go('appointments'); };
     $('#open-allergens').onclick = () => { closeModal(); go('allergens'); };
   }
+  
+  function enableModalSwipe(modal) {
+  const handle = document.createElement('div');
+  handle.className = 'modal-drag-handle';
+  handle.setAttribute('aria-hidden', 'true');
+  modal.prepend(handle);
+
+  let pointerId = null;
+  let startX = 0;
+  let startY = 0;
+  let distance = 0;
+  let dragging = false;
+  let closing = false;
+  let suppressClick = false;
+
+  const reducedMotion = () =>
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function resetPosition() {
+    modal.classList.remove('modal-dragging');
+    modal.style.transition = reducedMotion()
+      ? 'none'
+      : 'transform 180ms ease';
+
+    modal.style.transform = 'translateY(0)';
+  }
+
+  modal.addEventListener('pointerdown', event => {
+    if (!event.isPrimary || event.button !== 0) return;
+    if (pointerId !== null || closing) return;
+
+    const target = event.target;
+
+    if (!target.closest('.modal-drag-handle, .modal-head')) return;
+
+    if (target.closest(
+      'button, a, input, select, textarea, label, [role="button"]'
+    )) return;
+
+    pointerId = event.pointerId;
+    startX = event.clientX;
+    startY = event.clientY;
+    distance = 0;
+    dragging = false;
+
+    modal.style.animation = 'none';
+    modal.style.transition = 'none';
+    modal.setPointerCapture(pointerId);
+  });
+
+  modal.addEventListener('pointermove', event => {
+    if (event.pointerId !== pointerId) return;
+
+    const dx = event.clientX - startX;
+    const dy = event.clientY - startY;
+
+    if (!dragging) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+
+      if (dy <= 0 || Math.abs(dx) > Math.abs(dy)) {
+        const capturedId = pointerId;
+        pointerId = null;
+
+        if (modal.hasPointerCapture(capturedId)) {
+          modal.releasePointerCapture(capturedId);
+        }
+
+        return;
+      }
+
+      dragging = true;
+      modal.classList.add('modal-dragging');
+    }
+
+    event.preventDefault();
+    distance = Math.max(0, dy);
+    modal.style.transform = `translateY(${distance}px)`;
+  });
+
+  function finishDrag(event, cancelled = false) {
+    if (event.pointerId !== pointerId) return;
+
+    const capturedId = pointerId;
+    pointerId = null;
+
+    if (modal.hasPointerCapture(capturedId)) {
+      modal.releasePointerCapture(capturedId);
+    }
+
+    if (!dragging) return;
+
+    dragging = false;
+    suppressClick = true;
+    setTimeout(() => { suppressClick = false; }, 0);
+
+    modal.classList.remove('modal-dragging');
+
+    const threshold = Math.min(120, modal.offsetHeight * 0.3);
+
+    if (cancelled || distance < threshold) {
+      resetPosition();
+      return;
+    }
+
+    closing = true;
+    modal.style.pointerEvents = 'none';
+
+    const duration = reducedMotion() ? 0 : 180;
+    const exitDistance = window.innerHeight;
+
+    modal.style.transition = duration
+      ? `transform ${duration}ms ease-in`
+      : 'none';
+
+    modal.style.transform = `translateY(${exitDistance}px)`;
+
+    setTimeout(() => {
+      // Do not close a different popup opened during the animation.
+      const currentModal =
+        document.querySelector('#modal-root .modal');
+
+      if (currentModal === modal) closeModal();
+    }, duration);
+  }
+
+  modal.addEventListener('pointerup', event => {
+    finishDrag(event);
+  });
+
+  modal.addEventListener('pointercancel', event => {
+    finishDrag(event, true);
+  });
+
+  modal.addEventListener('lostpointercapture', event => {
+    finishDrag(event, true);
+  });
+
+  modal.addEventListener('click', event => {
+    if (!suppressClick && !closing) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
+}
 
   function openModal(html) {
     restoreSettingsContent();
     const root = $('#modal-root');
     root.innerHTML = `<div class="modal-backdrop" role="presentation"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">${html}</section></div>`;
     const backdrop = root.querySelector('.modal-backdrop');
-    backdrop.addEventListener('click', e => { if (e.target === backdrop) closeModal(); });
+    enableModalSwipe(root.querySelector('.modal'));
+    backdrop.:('click', e => { if (e.target === backdrop) closeModal(); });
     root.querySelectorAll('[data-close]').forEach(b => b.onclick = closeModal);
     const first = root.querySelector('input,button,select,textarea');
     if (first) setTimeout(() => first.focus(), 20);

@@ -75,7 +75,14 @@
 .appointment-today .dose-main h3 { overflow-wrap: anywhere; }
 
 /* Allergens */
-.allergen-card { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; border-left: 5px solid var(--border); }
+.allergen-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  border-left: 5px solid var(--border);
+  padding: 16px;
+}
 .allergen-card.sev-mild { border-left-color: #4b9b76; }
 .allergen-card.sev-moderate { border-left-color: #c28b46; }
 .allergen-card.sev-severe { border-left-color: #d16f72; }
@@ -100,3 +107,32 @@
 .allergen-chip.sev-severe { background: #d16f72; border-color: #d16f72; color: #fff; }
 .allergen-chip.sev-life-threatening { background: #b3261e; border-color: #b3261e; color: #fff; }
 .allergen-chip.more { color: var(--muted); font-weight: 500; }
+
+/* Shared popup drag-to-dismiss */
+.modal-drag-handle {
+  display: grid;
+  place-items: center;
+  height: 24px;
+  margin: -10px 0 8px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.modal-drag-handle::before {
+  content: "";
+  width: 42px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--muted);
+  opacity: 0.45;
+}
+
+.modal .modal-head {
+  touch-action: none;
+}
+
+.modal.modal-dragging {
+  user-select: none;
+  cursor: grabbing;
+}
