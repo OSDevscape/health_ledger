@@ -136,3 +136,43 @@
   user-select: none;
   cursor: grabbing;
 }
+
+/* Appointment note: read first, edit explicitly. */
+.appointment-note-button.has-note {
+  background: var(--soft);
+  border-color: var(--accent);
+  color: var(--accent-dark);
+  font-weight: 700;
+}
+.appointment-note-button:focus-visible,
+.appointment-note-edit:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.appointment-note-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.appointment-note-toolbar > span {
+  color: var(--muted);
+  font-size: .85rem;
+}
+.appointment-note-edit { min-height: 44px; }
+.appointment-note-panel {
+  min-height: 140px;
+  max-height: 50vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+}
+.appointment-note-panel.is-empty { color: var(--muted); }
+#appointment-note-text { min-height: 160px; resize: vertical; }
