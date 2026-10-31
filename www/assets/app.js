@@ -106,6 +106,7 @@
     const status = appointmentState(item, nowMs);
     const details = [item.provider, item.type, item.visitFormat].filter(Boolean).join(' · ');
     const reminderLabels = appointmentReminderLabels(item);
+    const hasNote = Boolean(String(item.notes || '').trim());
     return `
       <article class="appointment-card card">
         <div class="appointment-date-badge" aria-hidden="true">
@@ -122,7 +123,6 @@
           ${details ? `<p class="appointment-detail">${esc(details)}</p>` : ''}
           ${item.location ? `<p class="appointment-detail">${esc(item.location)}</p>` : ''}
           ${reminderLabels.length && !finished ? `<p class="appointment-detail">🔔 ${esc(reminderLabels.join(', '))}</p>` : ''}
-          ${item.notes ? `<p class="appointment-detail appointment-notes">${esc(item.notes)}</p>` : ''}
           <span class="appointment-state ${status}">${APPOINTMENT_LABELS[status]}</span>
         </div>
         <div class="appointment-card-actions">
@@ -135,11 +135,15 @@
             ${finished ? '<option value="scheduled">Mark scheduled</option>' : ''}
             <option value="reschedule">Reschedule</option>
           </select>
+          <button type="button" class="appointment-edit-button appointment-note-button${hasNote ? ' has-note' : ''}" data-appointment-note="${esc(item.id)}" aria-label="${hasNote ? 'Read note' : 'Add note'} for ${esc(item.title)}" aria-haspopup="dialog">${hasNote ? 'Read' : 'Note'}</button>
         </div>
       </article>`;
   }
 
   function bindAppointmentCards(root) {
+    root.querySelectorAll('[data-appointment-note]').forEach(button => {
+      button.onclick = () => openAppointmentNoteModal(button.dataset.appointmentNote);
+    });
     root.querySelectorAll('[data-edit-appointment]').forEach(button => { button.onclick = () => openAppointmentModal(button.dataset.editAppointment); });
     root.querySelectorAll('[data-appointment-status]').forEach(menu => {
       menu.onchange = () => {
@@ -324,6 +328,88 @@
 
       toast('Appointment rescheduled.' + appointmentReminderMessage(result));
     };
+  }
+
+  function openAppointmentNoteModal(id) {
+    const appointment = appointments.find(item => item.id === id);
+    if (!appointment) {
+      toast('This appointment is no longer available.');
+      return;
+    }
+
+    const returnToArchive = Boolean($('#appointment-archive-list'));
+    openModal(`
+      <div class="modal-head">
+        <h2 id="modal-title">Appointment note</h2>
+        <button type="button" class="close-modal" data-close aria-label="Close appointment note">×</button>
+      </div>
+      <p class="modal-intro">${esc(appointment.title)}</p>
+      <div id="appointment-note-content"></div>
+    `);
+
+    const content = $('#appointment-note-content');
+
+    function renderReadOnly(focusEdit = false) {
+      const current = appointments.find(item => item.id === id);
+      if (!current) {
+        closeModal();
+        toast('This appointment is no longer available.');
+        return;
+      }
+      const notes = String(current.notes || '');
+      content.innerHTML = `
+        <div class="appointment-note-toolbar">
+          <span>Note</span>
+          <button type="button" class="secondary-button appointment-note-edit" id="edit-appointment-note" aria-label="Edit appointment note"><span aria-hidden="true">⚙️</span> Edit</button>
+        </div>
+        <div class="appointment-note-panel${notes.trim() ? '' : ' is-empty'}">${notes.trim() ? esc(notes) : 'No note added yet.'}</div>
+        <div class="modal-actions">
+          <button type="button" class="secondary-button" id="close-appointment-note">Close</button>
+        </div>`;
+      $('#edit-appointment-note').onclick = renderEditor;
+      $('#close-appointment-note').onclick = () => {
+        closeModal();
+        if (returnToArchive) openAppointmentArchive();
+      };
+      if (focusEdit) $('#edit-appointment-note').focus();
+    }
+
+    function renderEditor() {
+      const current = appointments.find(item => item.id === id);
+      if (!current) {
+        toast('This appointment is no longer available.');
+        return;
+      }
+      content.innerHTML = `
+        <form id="appointment-note-form" class="modal-form">
+          <label class="field">
+            <span>Note</span>
+            <textarea id="appointment-note-text" rows="7" placeholder="Add a note for this appointment...">${esc(String(current.notes || ''))}</textarea>
+          </label>
+          <div class="modal-actions">
+            <button type="button" class="secondary-button" id="cancel-appointment-note">Cancel</button>
+            <button type="submit" class="primary-button">Save note</button>
+          </div>
+        </form>`;
+      $('#cancel-appointment-note').onclick = () => renderReadOnly(true);
+      $('#appointment-note-form').onsubmit = event => {
+        event.preventDefault();
+        const latest = appointments.find(item => item.id === id);
+        if (!latest) {
+          toast('This appointment is no longer available.');
+          return;
+        }
+        const notes = $('#appointment-note-text').value.trim();
+        const updated = { ...latest, notes, updatedAt: new Date().toISOString() };
+        if (!saveAppointments(appointments.map(item => item.id === id ? updated : item))) return;
+        refreshAppointmentViews();
+        renderReadOnly(true);
+        toast(notes ? 'Appointment note saved.' : 'Appointment note cleared.');
+      };
+      $('#appointment-note-text').focus();
+    }
+
+    renderReadOnly();
   }
 
   function openAppointmentModal(id = null) {
